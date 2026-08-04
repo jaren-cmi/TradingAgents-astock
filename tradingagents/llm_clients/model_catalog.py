@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
+
+from .model_discovery import get_discovered_model_ids
 
 ModelOption = Tuple[str, str]
 ProviderModeOptions = Dict[str, Dict[str, List[ModelOption]]]
@@ -101,6 +103,16 @@ MODEL_OPTIONS: ProviderModeOptions = {
             ("Custom model ID", "custom"),
         ],
     },
+    "kimi": {
+        "quick": [
+            ("Kimi K2 - Fast / latest discovered", "kimi-k2"),
+            ("Custom model ID", "custom"),
+        ],
+        "deep": [
+            ("Kimi K2 - Latest discovered", "kimi-k2"),
+            ("Custom model ID", "custom"),
+        ],
+    },
     "minimax": {
         "quick": [
             ("MiniMax-M2.7-highspeed - Latest fast model", "MiniMax-M2.7-highspeed"),
@@ -147,3 +159,21 @@ def get_known_models() -> Dict[str, List[str]]:
         )
         for provider, mode_options in MODEL_OPTIONS.items()
     }
+
+
+def _ensure_custom_option(options: List[ModelOption]) -> List[ModelOption]:
+    """Ensure the custom model sentinel remains available at the end."""
+    without_custom = [option for option in options if option[1] != "custom"]
+    without_custom.append(("Custom model ID", "custom"))
+    return without_custom
+
+
+def get_dynamic_model_options(
+    provider: str, mode: str, base_url: Optional[str] = None
+) -> List[ModelOption]:
+    """Return dynamically discovered model IDs with hardcoded fallback."""
+    fallback = _ensure_custom_option(list(get_model_options(provider, mode)))
+    discovered = get_discovered_model_ids(provider, base_url=base_url)
+    if not discovered:
+        return fallback
+    return _ensure_custom_option([(model_id, model_id) for model_id in discovered])
