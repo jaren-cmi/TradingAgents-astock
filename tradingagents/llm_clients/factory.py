@@ -8,7 +8,7 @@ from .base_client import BaseLLMClient
 # proxies, …): the user supplies base_url + model + a generic API key, with no
 # hard-coded vendor defaults (#77 / #81).
 _OPENAI_COMPATIBLE = (
-    "openai", "xai", "deepseek", "qwen", "glm", "ollama", "openrouter", "minimax",
+    "openai", "xai", "deepseek", "qwen", "glm", "ollama", "openrouter", "minimax", "kimi",
     "openai_compatible",
 )
 

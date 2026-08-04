@@ -9,7 +9,8 @@ import streamlit as st
 
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.checkpointer import clear_checkpoint
-from tradingagents.llm_clients.model_catalog import MODEL_OPTIONS
+from tradingagents.llm_clients.model_catalog import MODEL_OPTIONS, get_dynamic_model_options
+from tradingagents.llm_clients.model_discovery import _DYNAMIC_PROVIDERS, get_discovered_model_ids
 from web.history import (
     clear_incomplete_task,
     get_history,
@@ -23,6 +24,7 @@ _PROVIDERS: list[tuple[str, str]] = [
     ("DeepSeek", "deepseek"),
     ("通义千问 Qwen", "qwen"),
     ("智谱 GLM", "glm"),
+    ("Kimi（Moonshot·OpenAI 兼容）", "kimi"),
     ("OpenAI", "openai"),
     ("Anthropic", "anthropic"),
     ("Google Gemini", "google"),
@@ -146,8 +148,12 @@ def _render_llm_config() -> None:
     st.session_state["llm_provider"] = provider_key
 
     if provider_key in MODEL_OPTIONS:
-        quick_options = MODEL_OPTIONS[provider_key]["quick"]
-        deep_options = MODEL_OPTIONS[provider_key]["deep"]
+        base_url_override = (st.session_state.get("llm_base_url") or os.getenv("BACKEND_URL") or "").strip() or None
+        quick_options = get_dynamic_model_options(provider_key, "quick", base_url=base_url_override)
+        deep_options = get_dynamic_model_options(provider_key, "deep", base_url=base_url_override)
+
+        if provider_key in _DYNAMIC_PROVIDERS and not get_discovered_model_ids(provider_key, base_url=base_url_override):
+            st.caption("未能从供应商获取最新模型列表（可能未配置对应 API Key 或该网关未提供 /models 接口），已使用内置列表。")
 
         quick_labels = [label for label, _ in quick_options]
         quick_values = [value for _, value in quick_options]
@@ -161,7 +167,10 @@ def _render_llm_config() -> None:
             key="quick_model_idx",
             help="用于常规分析任务，速度优先",
         )
-        st.session_state["quick_think_llm"] = quick_values[quick_idx]
+        quick_value = quick_values[quick_idx]
+        if quick_value == "custom":
+            quick_value = st.text_input("快速思考模型 ID", key="custom_quick_model")
+        st.session_state["quick_think_llm"] = quick_value
 
         deep_idx = st.selectbox(
             "深度思考模型",
@@ -170,7 +179,10 @@ def _render_llm_config() -> None:
             key="deep_model_idx",
             help="用于辩论/决策等需要深度推理的任务",
         )
-        st.session_state["deep_think_llm"] = deep_values[deep_idx]
+        deep_value = deep_values[deep_idx]
+        if deep_value == "custom":
+            deep_value = st.text_input("深度思考模型 ID", key="custom_deep_model")
+        st.session_state["deep_think_llm"] = deep_value
     else:
         custom_quick = st.text_input("快速思考模型 ID", key="custom_quick_model")
         custom_deep = st.text_input("深度思考模型 ID", key="custom_deep_model")
