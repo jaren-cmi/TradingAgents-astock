@@ -10,6 +10,7 @@ import streamlit as st
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.checkpointer import clear_checkpoint
 from tradingagents.llm_clients.model_catalog import MODEL_OPTIONS, get_dynamic_model_options
+from tradingagents.llm_clients.model_discovery import _DYNAMIC_PROVIDERS, get_discovered_model_ids
 from web.history import (
     clear_incomplete_task,
     get_history,
@@ -23,6 +24,7 @@ _PROVIDERS: list[tuple[str, str]] = [
     ("DeepSeek", "deepseek"),
     ("通义千问 Qwen", "qwen"),
     ("智谱 GLM", "glm"),
+    ("Kimi（Moonshot·OpenAI 兼容）", "kimi"),
     ("OpenAI", "openai"),
     ("Anthropic", "anthropic"),
     ("Google Gemini", "google"),
@@ -149,6 +151,9 @@ def _render_llm_config() -> None:
         base_url_override = (st.session_state.get("llm_base_url") or os.getenv("BACKEND_URL") or "").strip() or None
         quick_options = get_dynamic_model_options(provider_key, "quick", base_url=base_url_override)
         deep_options = get_dynamic_model_options(provider_key, "deep", base_url=base_url_override)
+
+        if provider_key in _DYNAMIC_PROVIDERS and not get_discovered_model_ids(provider_key, base_url=base_url_override):
+            st.caption("未能从供应商获取最新模型列表（可能未配置对应 API Key 或该网关未提供 /models 接口），已使用内置列表。")
 
         quick_labels = [label for label, _ in quick_options]
         quick_values = [value for _, value in quick_options]

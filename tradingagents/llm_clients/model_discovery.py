@@ -53,7 +53,7 @@ def _extract_model_ids(payload: dict) -> List[str]:
 def _fetch_models(base_url: str, api_key: str, timeout: int) -> List[str]:
     response = requests.get(
         _models_endpoint(base_url),
-        headers={"Authorization": f"******"},
+        headers={"Authorization": f"Bearer {api_key}"},
         timeout=timeout,
     )
     response.raise_for_status()
