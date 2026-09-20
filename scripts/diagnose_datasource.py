@@ -37,9 +37,6 @@ SUPPORTED_APIS = [
     "get_industry_comparison",
 ]
 
-_DIAG_SESSION = requests.Session()
-_DIAG_SESSION.headers.update({"User-Agent": a_stock._UA})
-
 
 @dataclass
 class RequestTrace:
@@ -101,16 +98,16 @@ def _build_public_url(url: str, params: dict[str, Any] | None) -> str:
 
 def _run_traced_request(
     transport: str,
-    request_fn: Callable[..., Any],
+    request_fn: Callable[[], Any],
     url: str,
     *,
     params: dict[str, Any] | None = None,
     headers: dict[str, Any] | None = None,
-    timeout: int = 15,
 ) -> tuple[RequestTrace, requests.Response | None, Exception | None]:
     started = time.perf_counter()
     try:
-        response = request_fn(url, params=params, headers=headers, timeout=timeout)
+        with quiet_dataflow_logger():
+            response = request_fn()
     except Exception as exc:
         return (
             RequestTrace(
@@ -223,7 +220,17 @@ def _probe_sina_financial(
     }
     headers = {"User-Agent": a_stock._UA}
     trace, response, exc = _run_traced_request(
-        "requests.get", requests.get, url, params=params, headers=headers
+        "requests.get",
+        lambda: a_stock._http_get(
+            url,
+            params=params,
+            headers=headers,
+            timeout=15,
+            source_name=f"Sina {report_type} {code}",
+        ),
+        url,
+        params=params,
+        headers=headers,
     )
     if exc:
         return False, a_stock._exception_summary(exc), [trace]
@@ -246,7 +253,7 @@ def _probe_eastmoney_financial(
     params = a_stock._eastmoney_financial_report_params(code, report_type)
     trace, response, exc = _run_traced_request(
         "eastmoney-session.get",
-        _DIAG_SESSION.get,
+        lambda: a_stock._em_get(url, params=params, timeout=15),
         url,
         params=params,
     )
@@ -278,7 +285,15 @@ def _probe_tencent_financial(
     )
     headers = {"User-Agent": a_stock._UA, "Referer": "https://stock.finance.qq.com/"}
     trace, response, exc = _run_traced_request(
-        "requests.get", requests.get, url, headers=headers
+        "requests.get",
+        lambda: a_stock._http_get(
+            url,
+            headers=headers,
+            timeout=15,
+            source_name=f"Tencent {report_type} {code}",
+        ),
+        url,
+        headers=headers,
     )
     if exc:
         return False, a_stock._exception_summary(exc), [trace]
@@ -330,7 +345,7 @@ def _probe_industry_comparison(
     }
     trace, response, exc = _run_traced_request(
         "eastmoney-session.get",
-        _DIAG_SESSION.get,
+        lambda: a_stock._em_get(url, params=params, headers=headers, timeout=15),
         url,
         params=params,
         headers=headers,
