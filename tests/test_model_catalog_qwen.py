@@ -33,8 +33,9 @@ def test_qwen_catalog_promotes_38_models_and_keeps_custom_last():
 
 
 @pytest.mark.unit
-def test_qwen_38_model_ids_are_accepted_without_unknown_warning():
-    client = DummyQwenClient("qwen3.8-max-0902")
+@pytest.mark.parametrize("model_name", ["qwen3.8-max-0902", "qwen3.9-ultra-preview"])
+def test_qwen_model_ids_are_accepted_without_unknown_warning(model_name):
+    client = DummyQwenClient(model_name)
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -44,8 +45,9 @@ def test_qwen_38_model_ids_are_accepted_without_unknown_warning():
 
 
 @pytest.mark.unit
-def test_qwen_38_family_keeps_permissive_structured_output_defaults():
-    capabilities = get_capabilities("qwen3.8-max-0902")
+@pytest.mark.parametrize("model_name", ["qwen3.8-max-0902", "qwen3.9-ultra-preview"])
+def test_qwen_family_keeps_permissive_structured_output_defaults(model_name):
+    capabilities = get_capabilities(model_name)
 
     assert capabilities.supports_tool_choice is True
     assert capabilities.supports_json_mode is True
