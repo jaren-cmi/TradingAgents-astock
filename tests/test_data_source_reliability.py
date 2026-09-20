@@ -61,7 +61,12 @@ def test_financial_report_falls_back_to_eastmoney(monkeypatch):
     monkeypatch.setattr(
         a_stock,
         "_get_financial_report_eastmoney",
-        lambda *args, **kwargs: pd.DataFrame([{"报告日": "2026-06-30", "资产总计": 1}]),
+        lambda *args, **kwargs: pd.DataFrame(
+            [
+                {"报告日": "2026-06-30", "资产总计": 1},
+                {"报告日": "2026-12-31", "资产总计": 2},
+            ]
+        ),
     )
     monkeypatch.setattr(
         a_stock,
@@ -75,6 +80,7 @@ def test_financial_report_falls_back_to_eastmoney(monkeypatch):
 
     assert "# Data source: 东方财富 datacenter" in out
     assert "资产总计" in out
+    assert "2026-12-31" not in out
 
 
 def test_financial_report_all_sources_failed_returns_unavailable(monkeypatch):

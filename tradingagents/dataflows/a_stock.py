@@ -1353,6 +1353,64 @@ def _filter_financial_report_df(
     return work.head(8).reset_index(drop=True)
 
 
+def _filter_financial_report_columns_by_header(
+    df: pd.DataFrame,
+    freq: str,
+    curr_date: str | None = None,
+) -> pd.DataFrame:
+    """Filter wide statement tables whose report dates live in column headers."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    work = df.copy()
+    if isinstance(work.columns, pd.MultiIndex):
+        work.columns = [
+            " ".join(str(part).strip() for part in col if str(part).strip())
+            for col in work.columns
+        ]
+    else:
+        work.columns = [str(col).strip() for col in work.columns]
+
+    if len(work.columns) < 2:
+        return pd.DataFrame()
+
+    cutoff = pd.to_datetime(curr_date) if curr_date else None
+    first_col = work.columns[0]
+    kept_cols = [first_col]
+    for col in work.columns[1:]:
+        match = _re.search(r"(\d{4}[-/]\d{2}[-/]\d{2})", str(col))
+        if not match:
+            continue
+        report_date = pd.to_datetime(match.group(1).replace("/", "-"), errors="coerce")
+        if pd.isna(report_date):
+            continue
+        if cutoff is not None and report_date > cutoff:
+            continue
+        if freq.lower() == "annual" and report_date.month != 12:
+            continue
+        kept_cols.append(col)
+
+    if len(kept_cols) <= 1:
+        return pd.DataFrame()
+    return work.loc[:, kept_cols[:9]].reset_index(drop=True)
+
+
+def _apply_financial_statement_filters(
+    df: pd.DataFrame,
+    freq: str,
+    curr_date: str | None = None,
+) -> pd.DataFrame:
+    """Apply whichever financial-report filtering strategy matches the frame shape."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+    if _financial_report_date_series(df) is not None:
+        return _filter_financial_report_df(df, freq, curr_date)
+    filtered = _filter_financial_report_columns_by_header(df, freq, curr_date)
+    if not filtered.empty:
+        return filtered
+    return df.head(8).reset_index(drop=True)
+
+
 def _get_financial_report_sina(
     code: str, report_type: str, freq: str, curr_date: str = None,
 ) -> pd.DataFrame:
@@ -1391,7 +1449,7 @@ def _get_financial_report_sina(
     if not isinstance(items, list) or not items:
         return pd.DataFrame()
 
-    return _filter_financial_report_df(pd.DataFrame(items), freq, curr_date)
+    return _apply_financial_statement_filters(pd.DataFrame(items), freq, curr_date)
 
 
 def _get_financial_report_eastmoney(
@@ -1424,7 +1482,7 @@ def _get_financial_report_eastmoney(
     items = payload.get("result", {}).get("data") or []
     if not isinstance(items, list) or not items:
         return pd.DataFrame()
-    return _filter_financial_report_df(pd.DataFrame(items), freq, curr_date)
+    return _apply_financial_statement_filters(pd.DataFrame(items), freq, curr_date)
 
 
 def _get_financial_report_tencent(
@@ -1467,7 +1525,9 @@ def _get_financial_report_tencent(
             continue
         if not any("报" in str(col) or _re.search(r"\d{4}-\d{2}-\d{2}", str(col)) for col in work.columns[1:]):
             continue
-        return _filter_financial_report_df(work, freq, curr_date)
+        filtered = _apply_financial_statement_filters(work, freq, curr_date)
+        if not filtered.empty:
+            return filtered
     return pd.DataFrame()
 
 
@@ -1488,6 +1548,7 @@ def _get_financial_report(
         except Exception as exc:
             statuses.append(("unavailable", source_name, _exception_summary(exc)))
             continue
+        df = _apply_financial_statement_filters(df, freq, curr_date)
         if df is not None and not df.empty:
             return source_name, df, None
         statuses.append(("no_data", source_name, None))
@@ -2820,10 +2881,9 @@ def get_industry_comparison(
                     lines.append(f"  ... (showing top/bottom {top_n})")
                     break
         else:
-            return _format_source_unavailable(
+            return _format_confirmed_no_data(
                 "行业对比",
-                ["东方财富 push2"],
-                "Empty response",
+                "接口正常返回但当日未取得可用行业列表。这是事实，可直接写入报告。",
             )
     except Exception as e:
         return _format_source_unavailable(
