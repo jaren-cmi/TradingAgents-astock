@@ -12,38 +12,22 @@ import contextlib
 import json
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass
+from io import StringIO
 from typing import Any, Callable
+
+import pandas as pd
+import requests
 
 from tradingagents.dataflows import a_stock
 
 
-FINANCIAL_APIS: dict[str, tuple[str, list[tuple[str, Callable[..., Any]]]]] = {
-    "get_balance_sheet": (
-        "资产负债表",
-        [
-            ("新浪财经 direct HTTP", a_stock._get_financial_report_sina),
-            ("东方财富 datacenter", a_stock._get_financial_report_eastmoney),
-            ("腾讯财经", a_stock._get_financial_report_tencent),
-        ],
-    ),
-    "get_cashflow": (
-        "现金流量表",
-        [
-            ("新浪财经 direct HTTP", a_stock._get_financial_report_sina),
-            ("东方财富 datacenter", a_stock._get_financial_report_eastmoney),
-            ("腾讯财经", a_stock._get_financial_report_tencent),
-        ],
-    ),
-    "get_income_statement": (
-        "利润表",
-        [
-            ("新浪财经 direct HTTP", a_stock._get_financial_report_sina),
-            ("东方财富 datacenter", a_stock._get_financial_report_eastmoney),
-            ("腾讯财经", a_stock._get_financial_report_tencent),
-        ],
-    ),
+FINANCIAL_APIS = {
+    "get_balance_sheet": "资产负债表",
+    "get_cashflow": "现金流量表",
+    "get_income_statement": "利润表",
 }
 
 SUPPORTED_APIS = [
@@ -52,6 +36,9 @@ SUPPORTED_APIS = [
     "get_income_statement",
     "get_industry_comparison",
 ]
+
+_DIAG_SESSION = requests.Session()
+_DIAG_SESSION.headers.update({"User-Agent": a_stock._UA})
 
 
 @dataclass
@@ -108,68 +95,50 @@ def _snippet(text: str, max_lines: int = 12, max_chars: int = 1200) -> str:
 
 
 def _build_public_url(url: str, params: dict[str, Any] | None) -> str:
-    prepared = a_stock._requests.Request("GET", url, params=params).prepare()
+    prepared = requests.Request("GET", url, params=params).prepare()
     return _redact_text(prepared.url)
 
 
-@contextlib.contextmanager
-def traced_requests() -> list[RequestTrace]:
-    traces: list[RequestTrace] = []
-    orig_requests_get = a_stock._requests.get
-    orig_em_session_get = a_stock._EM_SESSION.get
-
-    def wrap_request(
-        transport: str,
-        original_get: Callable[..., Any],
-        url: str,
-        *args,
-        **kwargs,
-    ):
-        params = kwargs.get("params")
-        headers = kwargs.get("headers")
-        started = time.perf_counter()
-        try:
-            response = original_get(url, *args, **kwargs)
-        except Exception as exc:
-            traces.append(
-                RequestTrace(
-                    transport=transport,
-                    url=url,
-                    params=params,
-                    headers=headers,
-                    elapsed_ms=(time.perf_counter() - started) * 1000,
-                    status_code=None,
-                    body_snippet="",
-                    error=a_stock._exception_summary(exc),
-                )
-            )
-            raise
-        traces.append(
+def _run_traced_request(
+    transport: str,
+    request_fn: Callable[..., Any],
+    url: str,
+    *,
+    params: dict[str, Any] | None = None,
+    headers: dict[str, Any] | None = None,
+    timeout: int = 15,
+) -> tuple[RequestTrace, requests.Response | None, Exception | None]:
+    started = time.perf_counter()
+    try:
+        response = request_fn(url, params=params, headers=headers, timeout=timeout)
+    except Exception as exc:
+        return (
             RequestTrace(
                 transport=transport,
                 url=url,
                 params=params,
                 headers=headers,
                 elapsed_ms=(time.perf_counter() - started) * 1000,
-                status_code=getattr(response, "status_code", None),
-                body_snippet=_snippet(getattr(response, "text", "")),
-            )
+                status_code=None,
+                body_snippet="",
+                error=a_stock._exception_summary(exc),
+            ),
+            None,
+            exc,
         )
-        return response
-
-    def wrapped_requests_get(url: str, *args, **kwargs):
-        return wrap_request("requests.get", orig_requests_get, url, *args, **kwargs)
-
-    def wrapped_em_get(url: str, *args, **kwargs):
-        return wrap_request("eastmoney-session.get", orig_em_session_get, url, *args, **kwargs)
-
-    a_stock._requests.get = wrapped_requests_get
-    a_stock._EM_SESSION.get = wrapped_em_get
-    try:
-        yield traces
-    finally:
-        a_stock._requests.get = orig_requests_get
-        a_stock._EM_SESSION.get = orig_em_session_get
+    return (
+        RequestTrace(
+            transport=transport,
+            url=url,
+            params=params,
+            headers=headers,
+            elapsed_ms=(time.perf_counter() - started) * 1000,
+            status_code=getattr(response, "status_code", None),
+            body_snippet=_snippet(getattr(response, "text", "")),
+        ),
+        response,
+        None,
+    )
 
 
 @contextlib.contextmanager
@@ -210,7 +179,11 @@ def _render_fallback_result(
     detail: str,
     traces: list[RequestTrace],
 ) -> str:
-    lines = [f"## Fallback source: {source_name}", f"status: {'OK' if ok else 'FAILED'}", f"detail: {_redact_text(detail)}"]
+    lines = [
+        f"## Fallback source: {source_name}",
+        f"status: {'OK' if ok else 'FAILED'}",
+        f"detail: {_redact_text(detail)}",
+    ]
     if traces:
         lines.append("requests:")
         lines.extend(_render_trace(trace) for trace in traces)
@@ -219,40 +192,181 @@ def _render_fallback_result(
     return "\n".join(lines)
 
 
+def _financial_source_probes(
+) -> list[tuple[str, Callable[..., tuple[bool, str, list[RequestTrace]]]]]:
+    return [
+        ("新浪财经 direct HTTP", _probe_sina_financial),
+        ("东方财富 datacenter", _probe_eastmoney_financial),
+        ("腾讯财经", _probe_tencent_financial),
+    ]
+
+
+def _probe_sina_financial(
+    code: str,
+    report_type: str,
+    freq: str,
+    curr_date: str | None,
+) -> tuple[bool, str, list[RequestTrace]]:
+    source_type = {
+        "资产负债表": "fzb",
+        "利润表": "lrb",
+        "现金流量表": "llb",
+    }[report_type]
+    prefix = "sh" if code.startswith("6") else "sz"
+    url = "https://quotes.sina.cn/cn/api/openapi.php/CompanyFinanceService.getFinanceReport2022"
+    params = {
+        "paperCode": f"{prefix}{code}",
+        "source": source_type,
+        "type": "0",
+        "page": "1",
+        "num": "20",
+    }
+    headers = {"User-Agent": a_stock._UA}
+    trace, response, exc = _run_traced_request(
+        "requests.get", requests.get, url, params=params, headers=headers
+    )
+    if exc:
+        return False, a_stock._exception_summary(exc), [trace]
+    payload = response.json()
+    items = payload.get("result", {}).get("data", {}).get(source_type, [])
+    df = a_stock._normalize_financial_statement_df(pd.DataFrame(items), report_type)
+    df = a_stock._apply_financial_statement_filters(df, freq, curr_date)
+    if df.empty:
+        return False, "empty dataframe", [trace]
+    return True, f"rows={len(df)}, columns={list(df.columns)}", [trace]
+
+
+def _probe_eastmoney_financial(
+    code: str,
+    report_type: str,
+    freq: str,
+    curr_date: str | None,
+) -> tuple[bool, str, list[RequestTrace]]:
+    url = a_stock._DATACENTER_URL
+    params = a_stock._eastmoney_financial_report_params(code, report_type)
+    trace, response, exc = _run_traced_request(
+        "eastmoney-session.get",
+        _DIAG_SESSION.get,
+        url,
+        params=params,
+    )
+    if exc:
+        return False, a_stock._exception_summary(exc), [trace]
+    payload = response.json()
+    items = payload.get("result", {}).get("data") or []
+    df = a_stock._normalize_financial_statement_df(pd.DataFrame(items), report_type)
+    df = a_stock._apply_financial_statement_filters(df, freq, curr_date)
+    if df.empty:
+        return False, "empty dataframe", [trace]
+    return True, f"rows={len(df)}, columns={list(df.columns)}", [trace]
+
+
+def _probe_tencent_financial(
+    code: str,
+    report_type: str,
+    freq: str,
+    curr_date: str | None,
+) -> tuple[bool, str, list[RequestTrace]]:
+    url_map = {
+        "资产负债表": "zcfzb",
+        "利润表": "lrfpb",
+        "现金流量表": "xjllb",
+    }
+    url = (
+        "https://stock.finance.qq.com/corp1/"
+        f"{url_map[report_type]}_detail.php?zq=all&code={a_stock._get_prefix(code)}{code}"
+    )
+    headers = {"User-Agent": a_stock._UA, "Referer": "https://stock.finance.qq.com/"}
+    trace, response, exc = _run_traced_request(
+        "requests.get", requests.get, url, headers=headers
+    )
+    if exc:
+        return False, a_stock._exception_summary(exc), [trace]
+    tables = pd.read_html(StringIO(response.text))
+    for table in tables:
+        if table is None or table.empty:
+            continue
+        work = table.copy()
+        if isinstance(work.columns, pd.MultiIndex):
+            work.columns = [
+                " ".join(str(part).strip() for part in col if str(part).strip())
+                for col in work.columns
+            ]
+        else:
+            work.columns = [str(col).strip() for col in work.columns]
+        if len(work.columns) < 2:
+            continue
+        if not any(
+            "报" in str(col) or re.search(r"\d{4}-\d{2}-\d{2}", str(col))
+            for col in work.columns[1:]
+        ):
+            continue
+        work = a_stock._normalize_financial_statement_df(work, report_type)
+        filtered = a_stock._apply_financial_statement_filters(work, freq, curr_date)
+        if not filtered.empty:
+            return True, f"rows={len(filtered)}, columns={list(filtered.columns)}", [trace]
+    return False, "table layout unrecognized or empty dataframe", [trace]
+
+
+def _probe_industry_comparison(
+    ticker: str,
+    curr_date: str | None,
+    top_n: int,
+) -> tuple[str, list[RequestTrace]]:
+    url = "https://push2.eastmoney.com/api/qt/clist/get"
+    params = {
+        "pn": "1",
+        "pz": "100",
+        "po": "1",
+        "np": "1",
+        "fltt": "2",
+        "invt": "2",
+        "fs": "m:90+t:2",
+        "fields": "f2,f3,f4,f12,f13,f14,f104,f105,f128,f136,f140,f141,f207",
+    }
+    headers = {
+        "User-Agent": a_stock._UA,
+        "Referer": "https://quote.eastmoney.com/center/boardlist.html#industry_board",
+    }
+    trace, response, exc = _run_traced_request(
+        "eastmoney-session.get",
+        _DIAG_SESSION.get,
+        url,
+        params=params,
+        headers=headers,
+    )
+    if exc:
+        return a_stock._exception_summary(exc), [trace]
+    payload = response.json()
+    items = payload.get("data", {}).get("diff", [])
+    if not items:
+        return "empty industry list", [trace]
+    return f"rows={len(items)}, top_n={top_n}, trade_date={curr_date}", [trace]
+
+
 def diagnose_financial_api(
     api_name: str,
     ticker: str,
     freq: str,
     curr_date: str | None,
 ) -> str:
-    report_type, fetchers = FINANCIAL_APIS[api_name]
+    report_type = FINANCIAL_APIS[api_name]
     code = a_stock._normalize_ticker(ticker)
     lines = [f"# Diagnose {api_name}", f"ticker: {ticker}", f"normalized_code: {code}", f"report_type: {report_type}", f"freq: {freq}", f"curr_date: {curr_date or '(none)'}"]
 
-    for source_name, fetcher in fetchers:
-        with quiet_dataflow_logger(), traced_requests() as traces:
-            try:
-                df = fetcher(code, report_type, freq, curr_date)
-                if df is None or df.empty:
-                    detail = "empty dataframe"
-                    ok = False
-                else:
-                    detail = f"rows={len(df)}, columns={list(df.columns)}"
-                    ok = True
-            except Exception as exc:
-                detail = a_stock._exception_summary(exc)
-                ok = False
+    for source_name, fetcher in _financial_source_probes():
+        try:
+            ok, detail, traces = fetcher(code, report_type, freq, curr_date)
+        except Exception as exc:
+            ok, detail, traces = False, a_stock._exception_summary(exc), []
         lines.append("")
         lines.append(_render_fallback_result(source_name, ok, detail, traces))
 
-    with quiet_dataflow_logger(), traced_requests() as traces:
+    with quiet_dataflow_logger():
         final_text = getattr(a_stock, api_name)(ticker, freq, curr_date)
     lines.append("")
     lines.append("## Public API result")
     lines.append(_redact_text(final_text[:4000]))
-    if traces:
-        lines.append("requests:")
-        lines.extend(_render_trace(trace) for trace in traces)
     return "\n".join(lines)
 
 
@@ -262,14 +376,18 @@ def diagnose_industry_comparison(
     top_n: int,
 ) -> str:
     lines = [f"# Diagnose get_industry_comparison", f"ticker: {ticker}", f"trade_date: {curr_date or '(none)'}", f"top_n: {top_n}"]
-    with quiet_dataflow_logger(), traced_requests() as traces:
+    detail, traces = _probe_industry_comparison(ticker, curr_date, top_n)
+    with quiet_dataflow_logger():
         result = a_stock.get_industry_comparison(ticker, curr_date, top_n=top_n)
     lines.append("")
-    lines.append("## Public API result")
-    lines.append(_redact_text(result[:4000]))
+    lines.append("## Probe summary")
+    lines.append(_redact_text(detail))
     if traces:
         lines.append("requests:")
         lines.extend(_render_trace(trace) for trace in traces)
+    lines.append("")
+    lines.append("## Public API result")
+    lines.append(_redact_text(result[:4000]))
     return "\n".join(lines)
 
 
