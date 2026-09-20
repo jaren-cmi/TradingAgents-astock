@@ -191,3 +191,27 @@ def test_profit_forecast_parses_valid_html_without_false_format_error(
     assert "FY2026: EPS=13.5" in out
     assert "analysts=18" in out
     assert "Forward PE (FY2026): 10.0x" in out
+
+
+def test_annual_statement_filter_requires_year_end():
+    df = pd.DataFrame(
+        [
+            {"报告日": "2025-12-15", "资产总计": 1},
+            {"报告日": "2025-12-31", "资产总计": 2},
+            {"报告日": "2026-03-31", "资产总计": 3},
+        ]
+    )
+
+    out = a_stock._apply_financial_statement_filters(df, "annual", "2026-12-31")
+
+    assert out["报告日"].tolist() == ["2025-12-31"]
+
+
+def test_lockup_empty_results_are_confirmed_no_data(monkeypatch):
+    monkeypatch.setattr(a_stock, "_eastmoney_datacenter", lambda *args, **kwargs: [])
+
+    out = a_stock.get_lockup_expiry("688256", "2026-09-20")
+
+    assert "[确认无数据] 限售解禁" in out
+    assert "\n无历史解禁记录。" not in out
+    assert "\n未来 90 天无待解禁。" not in out

@@ -1348,7 +1348,7 @@ def _filter_financial_report_df(
         report_dates = _financial_report_date_series(work)
 
     if freq.lower() == "annual" and report_dates is not None:
-        work = work[report_dates.dt.month == 12]
+        work = work[(report_dates.dt.month == 12) & (report_dates.dt.day == 31)]
 
     return work.head(8).reset_index(drop=True)
 
@@ -1386,7 +1386,9 @@ def _filter_financial_report_columns_by_header(
             continue
         if cutoff is not None and report_date > cutoff:
             continue
-        if freq.lower() == "annual" and report_date.month != 12:
+        if freq.lower() == "annual" and not (
+            report_date.month == 12 and report_date.day == 31
+        ):
             continue
         kept_cols.append(col)
 
@@ -2714,6 +2716,8 @@ def get_lockup_expiry(
     upcoming_data = []
     history_failed = None
     upcoming_failed = None
+    history_empty = False
+    upcoming_empty = False
 
     # 1. 历史解禁记录 — eastmoney datacenter direct HTTP
     try:
@@ -2735,7 +2739,7 @@ def get_lockup_expiry(
                     f"| {row.get('FREE_RATIO', '')}"
                 )
         else:
-            lines.append("\n无历史解禁记录。")
+            history_empty = True
     except Exception as e:
         history_failed = e
 
@@ -2766,7 +2770,7 @@ def get_lockup_expiry(
                     f"| 占比 {row.get('FREE_RATIO', '')}"
                 )
         else:
-            lines.append(f"\n未来 {forward_days} 天无待解禁。")
+            upcoming_empty = True
     except Exception as e:
         upcoming_failed = e
 
@@ -2780,8 +2784,8 @@ def get_lockup_expiry(
     if (
         not history_failed
         and not upcoming_failed
-        and not history_data
-        and not upcoming_data
+        and history_empty
+        and upcoming_empty
     ):
         return "\n".join(
             [
@@ -2793,6 +2797,11 @@ def get_lockup_expiry(
                 ),
             ]
         )
+
+    if history_empty:
+        lines.append("\n无历史解禁记录。")
+    if upcoming_empty:
+        lines.append(f"\n未来 {forward_days} 天无待解禁。")
 
     if history_failed:
         lines.append(
