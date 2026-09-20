@@ -2787,7 +2787,7 @@ def get_lockup_expiry(
     except Exception as e:
         upcoming_failed = e
 
-    if history_failed and upcoming_failed:
+    if history_failed and upcoming_failed and not history_data and not upcoming_data:
         return _format_source_unavailable(
             "限售解禁",
             ["东方财富 datacenter"],
