@@ -33,6 +33,18 @@ def test_qwen_catalog_promotes_38_models_and_keeps_custom_last():
 
 
 @pytest.mark.unit
+def test_qwen_custom_entrypoint_accepts_future_free_form_model_id():
+    assert get_model_options("qwen", "deep")[-1] == ("Custom model ID", "custom")
+
+    client = DummyQwenClient("qwen3.9-ultra-preview")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        client.get_llm()
+
+    assert not [w for w in caught if "not in the known model list" in str(w.message)]
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("model_name", ["qwen3.8-max-0902", "qwen3.9-ultra-preview"])
 def test_qwen_model_ids_are_accepted_without_unknown_warning(model_name):
     client = DummyQwenClient(model_name)
