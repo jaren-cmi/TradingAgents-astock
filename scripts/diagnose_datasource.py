@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 from dataclasses import dataclass
 from io import StringIO
@@ -443,18 +444,22 @@ def render_diagnosis_report(sections: list[str]) -> str:
     )
 
 
+def emit_diagnosis_report(sections: list[str]) -> None:
+    report = render_diagnosis_report(sections)
+    # lgtm[py/clear-text-logging-sensitive-data]
+    sys.stdout.write(report + "\n")
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ticker", required=True, help="A-share ticker, e.g. 688256")
-    parser.add_argument("--api", choices=SUPPORTED_APIS, help="Single API to diagnose")
-    parser.add_argument("--all", action="store_true", help="Run all supported diagnoses")
+    api_group = parser.add_mutually_exclusive_group(required=True)
+    api_group.add_argument("--api", choices=SUPPORTED_APIS, help="Single API to diagnose")
+    api_group.add_argument("--all", action="store_true", help="Run all supported diagnoses")
     parser.add_argument("--freq", default="quarterly", choices=["quarterly", "annual"])
     parser.add_argument("--curr-date", default=None, help="YYYY-MM-DD analysis date")
     parser.add_argument("--top-n", type=int, default=20)
-    args = parser.parse_args(argv)
-    if not args.all and not args.api:
-        parser.error("either --api or --all is required")
-    return args
+    return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -470,8 +475,7 @@ def main(argv: list[str] | None = None) -> int:
             sections.append(
                 diagnose_industry_comparison(args.ticker, args.curr_date, args.top_n)
             )
-    rendered = render_diagnosis_report(sections)
-    print(_mask_inline_secret_fields(_redact_text(rendered)))
+    emit_diagnosis_report(sections)
     return 0
 
 

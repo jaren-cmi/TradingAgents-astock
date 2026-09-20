@@ -321,6 +321,13 @@ def test_diagnosis_report_redacts_inline_secret_fields():
     assert rendered.count("***REDACTED***") >= 2
 
 
+def test_diagnosis_parse_args_rejects_api_and_all():
+    with pytest.raises(SystemExit):
+        diagnose_datasource.parse_args(
+            ["--ticker", "688256", "--api", "get_balance_sheet", "--all"]
+        )
+
+
 def test_lockup_empty_results_are_confirmed_no_data(monkeypatch):
     monkeypatch.setattr(a_stock, "_eastmoney_datacenter", lambda *args, **kwargs: [])
 
