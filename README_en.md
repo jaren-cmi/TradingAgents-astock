@@ -169,6 +169,9 @@ ZHIPU_API_KEY=xxx
 # ── Option D: Tongyi Qianwen Qwen ──────────────────────────────────────────
 DASHSCOPE_API_KEY=sk-xxx
 # Apply at: https://dashscope.console.aliyun.com/
+# Web/CLI defaults now surface Qwen 3.8 Max (deep) and Qwen 3.8 Flash (quick);
+# when Alibaba releases a newer model, you can still use "Custom model ID"
+# immediately instead of waiting for a code update.
 
 # ── Option E: OpenAI ───────────────────────────────────────────────────────
 OPENAI_API_KEY=sk-xxx

@@ -183,6 +183,8 @@ ZHIPU_API_KEY=xxx
 # ── 方案 D：通义千问 Qwen ────────────────────────────
 DASHSCOPE_API_KEY=sk-xxx
 # 申请地址：https://dashscope.console.aliyun.com/
+# Web/CLI 默认会优先显示 Qwen 3.8 Max（深度）和 Qwen 3.8 Flash（快速）；
+# 若阿里新发型号，也可直接选「Custom model ID」手填，不必等代码更新。
 
 # ── 方案 E：OpenAI ───────────────────────────────────
 OPENAI_API_KEY=sk-xxx
@@ -480,5 +482,4 @@ config["agent_sdk_quick_model"] = "sonnet"    # 分析师节点
 #### 依赖说明
 
 `[agentsdk]` 的依赖链是 `claude-agent-sdk → mcp → httpx2`，**不碰 httpx**，与 mootdx 的 `httpx<0.26` 无冲突（已 `uv lock` 实测）——和 #87 里被移除的 `[google]` 情况不同，不需要单开 venv。
-
 

@@ -78,13 +78,19 @@ MODEL_OPTIONS: ProviderModeOptions = {
             ("Custom model ID", "custom"),
         ],
     },
+    # DashScope model IDs iterate quickly; append newly released defaults here
+    # when useful, but keep "Custom model ID" available so users can type any
+    # newer model name without waiting for a catalog update.
     "qwen": {
         "quick": [
+            ("Qwen 3.8 Flash", "qwen3.8-flash"),
             ("Qwen 3.5 Flash", "qwen3.5-flash"),
             ("Qwen Plus", "qwen-plus"),
             ("Custom model ID", "custom"),
         ],
         "deep": [
+            ("Qwen 3.8 Max", "qwen3.8-max-0902"),
+            ("Qwen 3.8 Flash", "qwen3.8-flash"),
             ("Qwen 3.6 Plus", "qwen3.6-plus"),
             ("Qwen 3.5 Plus", "qwen3.5-plus"),
             ("Qwen 3 Max", "qwen3-max"),
