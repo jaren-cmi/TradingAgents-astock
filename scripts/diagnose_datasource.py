@@ -346,7 +346,7 @@ def _probe_tencent_financial(
 
 
 def _probe_industry_comparison(
-    ticker: str,
+    code: str,
     curr_date: str | None,
     top_n: int,
 ) -> tuple[str, list[RequestTrace]]:
@@ -400,7 +400,7 @@ def diagnose_financial_api(
         lines.append(_render_fallback_result(source_name, ok, detail, traces))
 
     with quiet_dataflow_logger():
-        final_text = getattr(a_stock, api_name)(ticker, freq, curr_date)
+        final_text = getattr(a_stock, api_name)(code, freq, curr_date)
     lines.append("")
     lines.append("## Public API result")
     lines.append(_redact_text(final_text[:4000]))
@@ -412,10 +412,17 @@ def diagnose_industry_comparison(
     curr_date: str | None,
     top_n: int,
 ) -> str:
-    lines = [f"# Diagnose get_industry_comparison", f"ticker: {ticker}", f"trade_date: {curr_date or '(none)'}", f"top_n: {top_n}"]
-    detail, traces = _probe_industry_comparison(ticker, curr_date, top_n)
+    code = a_stock._normalize_ticker(ticker)
+    lines = [
+        f"# Diagnose get_industry_comparison",
+        f"ticker: {ticker}",
+        f"normalized_code: {code}",
+        f"trade_date: {curr_date or '(none)'}",
+        f"top_n: {top_n}",
+    ]
+    detail, traces = _probe_industry_comparison(code, curr_date, top_n)
     with quiet_dataflow_logger():
-        result = a_stock.get_industry_comparison(ticker, curr_date, top_n=top_n)
+        result = a_stock.get_industry_comparison(code, curr_date, top_n=top_n)
     lines.append("")
     lines.append("## Probe summary")
     lines.append(_redact_text(detail))
@@ -463,7 +470,8 @@ def main(argv: list[str] | None = None) -> int:
             sections.append(
                 diagnose_industry_comparison(args.ticker, args.curr_date, args.top_n)
             )
-    print(render_diagnosis_report(sections))
+    rendered = render_diagnosis_report(sections)
+    print(_mask_inline_secret_fields(_redact_text(rendered)))
     return 0
 
 
