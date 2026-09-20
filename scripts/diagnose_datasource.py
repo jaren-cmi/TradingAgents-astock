@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass
@@ -171,6 +172,20 @@ def traced_requests() -> list[RequestTrace]:
         a_stock._EM_SESSION.get = orig_em_session_get
 
 
+@contextlib.contextmanager
+def quiet_dataflow_logger():
+    logger = logging.getLogger(a_stock.__name__)
+    prev_disabled = logger.disabled
+    prev_level = logger.level
+    logger.disabled = False
+    logger.setLevel(logging.CRITICAL)
+    try:
+        yield
+    finally:
+        logger.disabled = prev_disabled
+        logger.setLevel(prev_level)
+
+
 def _render_trace(trace: RequestTrace) -> str:
     parts = [
         f"- transport: {trace.transport}",
@@ -215,7 +230,7 @@ def diagnose_financial_api(
     lines = [f"# Diagnose {api_name}", f"ticker: {ticker}", f"normalized_code: {code}", f"report_type: {report_type}", f"freq: {freq}", f"curr_date: {curr_date or '(none)'}"]
 
     for source_name, fetcher in fetchers:
-        with traced_requests() as traces:
+        with quiet_dataflow_logger(), traced_requests() as traces:
             try:
                 df = fetcher(code, report_type, freq, curr_date)
                 if df is None or df.empty:
@@ -230,7 +245,7 @@ def diagnose_financial_api(
         lines.append("")
         lines.append(_render_fallback_result(source_name, ok, detail, traces))
 
-    with traced_requests() as traces:
+    with quiet_dataflow_logger(), traced_requests() as traces:
         final_text = getattr(a_stock, api_name)(ticker, freq, curr_date)
     lines.append("")
     lines.append("## Public API result")
@@ -247,7 +262,7 @@ def diagnose_industry_comparison(
     top_n: int,
 ) -> str:
     lines = [f"# Diagnose get_industry_comparison", f"ticker: {ticker}", f"trade_date: {curr_date or '(none)'}", f"top_n: {top_n}"]
-    with traced_requests() as traces:
+    with quiet_dataflow_logger(), traced_requests() as traces:
         result = a_stock.get_industry_comparison(ticker, curr_date, top_n=top_n)
     lines.append("")
     lines.append("## Public API result")
