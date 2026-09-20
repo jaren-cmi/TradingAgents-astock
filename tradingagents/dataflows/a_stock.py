@@ -28,6 +28,7 @@ import socket
 import time
 import uuid
 import urllib.request
+from io import StringIO
 
 import pandas as pd
 import requests as _requests
@@ -35,6 +36,107 @@ import requests as _requests
 from .utils import safe_ticker_component
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Helpers: retries & standardized failure markers
+# ---------------------------------------------------------------------------
+
+def _exception_summary(exc: Exception) -> str:
+    """Compact exception summary for logs and user-visible failure markers."""
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    if status is not None:
+        return f"HTTP {status}"
+    text = str(exc).strip()
+    return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+
+
+def _is_retryable_http_error(exc: Exception) -> bool:
+    """Retry only transient network errors and HTTP 5xx responses."""
+    if isinstance(
+        exc,
+        (
+            _requests.exceptions.Timeout,
+            _requests.exceptions.ConnectionError,
+        ),
+    ):
+        return True
+    if isinstance(exc, _requests.exceptions.HTTPError):
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+        return status is not None and 500 <= status < 600
+    return False
+
+
+def _request_with_retry(
+    request_fn,
+    source_name: str,
+    max_retries: int = 3,
+    base_delay: float = 0.5,
+):
+    """Run one HTTP request with exponential backoff for transient failures only."""
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = request_fn()
+            status = getattr(response, "status_code", None)
+            if status is not None and 500 <= status < 600:
+                exc = _requests.exceptions.HTTPError(
+                    f"{source_name} returned HTTP {status}"
+                )
+                exc.response = response
+                raise exc
+            return response
+        except Exception as exc:
+            if not _is_retryable_http_error(exc):
+                raise
+            if attempt == max_retries:
+                logger.warning(
+                    "%s request failed after %d attempts: %s",
+                    source_name,
+                    attempt,
+                    _exception_summary(exc),
+                )
+                raise
+            delay = base_delay * (2 ** (attempt - 1))
+            logger.debug(
+                "%s request failed on attempt %d/%d: %s; retrying in %.1fs",
+                source_name,
+                attempt,
+                max_retries,
+                _exception_summary(exc),
+                delay,
+            )
+            time.sleep(delay)
+
+
+def _http_get(url, source_name: str, **kwargs):
+    """requests.get with transient-failure retry."""
+    return _request_with_retry(
+        lambda: _requests.get(url, **kwargs),
+        source_name=source_name,
+    )
+
+
+def _format_parameter_error(detail: str) -> str:
+    return f"[参数错误] {detail}"
+
+
+def _format_confirmed_no_data(subject: str, detail: str) -> str:
+    return f"[确认无数据] {subject}：{detail}"
+
+
+def _format_source_unavailable(
+    subject: str,
+    sources: list[str],
+    last_error: str | None = None,
+) -> str:
+    joined = "/".join(sources)
+    msg = f"[数据源不可用] {subject}：已尝试 {joined}，均未返回可用数据"
+    if last_error:
+        msg += f"（最后错误：{last_error}）"
+    msg += "。这是技术故障，不代表该公司没有披露相关数据。"
+    return msg
 
 
 # ---------------------------------------------------------------------------
@@ -556,15 +658,21 @@ def _em_get(url, params=None, headers=None, timeout=15, **kwargs):
     串行限流：与上次东财请求间隔 < EM_MIN_INTERVAL 时 sleep 补足 + 0.1~0.5s 随机抖动。
     传入的 headers 会覆盖 session 默认 UA（用于保留各端点自己的 Referer/Origin）。
     """
-    wait = _EM_MIN_INTERVAL - (time.time() - _em_last_call[0])
-    if wait > 0:
-        time.sleep(wait + random.uniform(0.1, 0.5))
-    try:
-        return _EM_SESSION.get(
-            url, params=params, headers=headers, timeout=timeout, **kwargs
-        )
-    finally:
-        _em_last_call[0] = time.time()
+    def _do_get():
+        wait = _EM_MIN_INTERVAL - (time.time() - _em_last_call[0])
+        if wait > 0:
+            time.sleep(wait + random.uniform(0.1, 0.5))
+        try:
+            return _EM_SESSION.get(
+                url, params=params, headers=headers, timeout=timeout, **kwargs
+            )
+        finally:
+            _em_last_call[0] = time.time()
+
+    return _request_with_retry(
+        _do_get,
+        source_name=f"Eastmoney {url}",
+    )
 
 
 def _eastmoney_datacenter(
@@ -599,6 +707,50 @@ def _eastmoney_datacenter(
 # ---------------------------------------------------------------------------
 
 
+def _normalize_profit_forecast_df(df: pd.DataFrame) -> pd.DataFrame | None:
+    """Normalize THS forecast tables across slightly different HTML layouts."""
+    if df is None or df.empty:
+        return None
+
+    work = df.copy()
+    if isinstance(work.columns, pd.MultiIndex):
+        work.columns = [
+            " ".join(str(part).strip() for part in col if str(part).strip())
+            for col in work.columns
+        ]
+    else:
+        work.columns = [str(col).strip() for col in work.columns]
+
+    renamed = {}
+    for col in work.columns:
+        if "年度" in col or "年份" in col:
+            renamed[col] = "年度"
+        elif "机构" in col and ("数" in col or "家" in col):
+            renamed[col] = "预测机构数"
+        elif "最小" in col or "最低" in col:
+            renamed[col] = "最小值"
+        elif "最大" in col or "最高" in col:
+            renamed[col] = "最大值"
+        elif "均值" in col or "平均" in col or "预测每股收益" in col:
+            renamed[col] = "均值"
+
+    work = work.rename(columns=renamed)
+    required = {"年度", "预测机构数", "最小值", "均值", "最大值"}
+    if not required.issubset(set(work.columns)):
+        return None
+
+    work = work.loc[:, ["年度", "预测机构数", "最小值", "均值", "最大值"]].copy()
+    work = work.dropna(how="all")
+    if work.empty:
+        return None
+
+    work["年度"] = work["年度"].astype(str).str.extract(r"(\d{4})", expand=False)
+    work = work.dropna(subset=["年度"])
+    if work.empty:
+        return None
+    return work.reset_index(drop=True)
+
+
 def _ths_eps_forecast(code: str) -> pd.DataFrame:
     """Fetch consensus EPS forecast from 同花顺 (direct HTTP).
 
@@ -609,16 +761,16 @@ def _ths_eps_forecast(code: str) -> pd.DataFrame:
         "User-Agent": _UA,
         "Referer": "https://basic.10jqka.com.cn/",
     }
-    r = _requests.get(url, headers=headers, timeout=15)
+    r = _http_get(url, headers=headers, timeout=15, source_name=f"THS EPS {code}")
     r.encoding = "gbk"
-    dfs = pd.read_html(r.text)
+    dfs = pd.read_html(StringIO(r.text))
     # Find the table containing EPS data
     for df in dfs:
-        cols = [str(c) for c in df.columns]
-        if any("每股收益" in c or "均值" in c for c in cols):
-            return df
+        normalized = _normalize_profit_forecast_df(df)
+        if normalized is not None:
+            return normalized
     # Fallback: return first table if exists
-    return dfs[0] if dfs else pd.DataFrame()
+    return pd.DataFrame()
 
 
 # ---------------------------------------------------------------------------
@@ -642,7 +794,12 @@ def _sina_kline_fallback(code: str, start_date: str = None, end_date: str = None
         "ma": "no",
         "datalen": "800",
     }
-    r = _requests.get(url, params=params, timeout=15)
+    r = _http_get(
+        url,
+        params=params,
+        timeout=15,
+        source_name=f"Sina K-line {code}",
+    )
     r.raise_for_status()
     data = _json.loads(r.text)
 
@@ -1075,11 +1232,11 @@ def get_fundamentals(
                 lines.append("\n--- Consensus EPS Forecast (同花顺) ---")
                 eps_by_year = {}
                 for _, row in forecast_df.iterrows():
-                    year = str(row.iloc[0]) if len(row) > 0 else ""
-                    mean_eps_val = row.iloc[3] if len(row) > 3 else 0
-                    count_val = row.iloc[1] if len(row) > 1 else 0
-                    min_eps_val = row.iloc[2] if len(row) > 2 else "N/A"
-                    max_eps_val = row.iloc[4] if len(row) > 4 else "N/A"
+                    year = str(row.get("年度", "")) if hasattr(row, "get") else ""
+                    mean_eps_val = row.get("均值", 0) if hasattr(row, "get") else 0
+                    count_val = row.get("预测机构数", 0) if hasattr(row, "get") else 0
+                    min_eps_val = row.get("最小值", "N/A") if hasattr(row, "get") else "N/A"
+                    max_eps_val = row.get("最大值", "N/A") if hasattr(row, "get") else "N/A"
                     try:
                         mean_eps = float(mean_eps_val)
                     except (ValueError, TypeError):
@@ -1162,6 +1319,40 @@ def _sina_stock_code(code: str) -> str:
     return f"{_get_prefix(code)}{code}"
 
 
+def _financial_report_date_series(df: pd.DataFrame) -> pd.Series | None:
+    """Best-effort report-date extraction across vendors."""
+    for col in ("报告日", "REPORT_DATE", "REPORT_DATE_DATE", "date", "Date"):
+        if col in df.columns:
+            series = pd.to_datetime(
+                df[col].astype(str).str[:10], errors="coerce"
+            )
+            if series.notna().any():
+                return series
+    return None
+
+
+def _filter_financial_report_df(
+    df: pd.DataFrame,
+    freq: str,
+    curr_date: str | None = None,
+) -> pd.DataFrame:
+    """Apply point-in-time and annual/quarterly filtering to a statement frame."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    work = df.copy()
+    report_dates = _financial_report_date_series(work)
+    if curr_date and report_dates is not None:
+        cutoff = pd.to_datetime(curr_date)
+        work = work[report_dates <= cutoff]
+        report_dates = _financial_report_date_series(work)
+
+    if freq.lower() == "annual" and report_dates is not None:
+        work = work[report_dates.dt.month == 12]
+
+    return work.head(8).reset_index(drop=True)
+
+
 def _get_financial_report_sina(
     code: str, report_type: str, freq: str, curr_date: str = None,
 ) -> pd.DataFrame:
@@ -1186,7 +1377,13 @@ def _get_financial_report_sina(
         "page": "1",
         "num": "20",
     }
-    r = _requests.get(url, params=params, headers={"User-Agent": _UA}, timeout=15)
+    r = _http_get(
+        url,
+        params=params,
+        headers={"User-Agent": _UA},
+        timeout=15,
+        source_name=f"Sina {report_type} {code}",
+    )
     d = r.json()
 
     result = d.get("result", {}).get("data", {})
@@ -1194,20 +1391,156 @@ def _get_financial_report_sina(
     if not isinstance(items, list) or not items:
         return pd.DataFrame()
 
-    df = pd.DataFrame(items)
+    return _filter_financial_report_df(pd.DataFrame(items), freq, curr_date)
 
-    # Filter by curr_date
-    if curr_date and "报告日" in df.columns:
-        df["报告日"] = pd.to_datetime(df["报告日"], errors="coerce")
-        cutoff = pd.to_datetime(curr_date)
-        df = df[df["报告日"] <= cutoff]
 
-    # Filter by frequency (annual = month 12 reports only)
-    if freq.lower() == "annual" and "报告日" in df.columns:
-        months = pd.to_datetime(df["报告日"], errors="coerce").dt.month
-        df = df[months == 12]
+def _get_financial_report_eastmoney(
+    code: str, report_type: str, freq: str, curr_date: str = None,
+) -> pd.DataFrame:
+    """Financial statement fallback via Eastmoney datacenter.
 
-    return df.head(8)
+    单一源故障会让三张表同时归零；这里补东财备用源，避免基本面分析在财报全失效时
+    只能靠一致预期硬撑，导致报告可信度明显下降。
+    """
+    report_name_map = {
+        "资产负债表": "RPT_F10_FINANCE_BALANCE",
+        "利润表": "RPT_F10_FINANCE_GINCOME",
+        "现金流量表": "RPT_F10_FINANCE_GCASHFLOW",
+    }
+    report_name = report_name_map[report_type]
+    params = {
+        "reportName": report_name,
+        "columns": "ALL",
+        "filter": f'(SECURITY_CODE="{code}")',
+        "pageNumber": "1",
+        "pageSize": "20",
+        "sortColumns": "REPORT_DATE",
+        "sortTypes": "-1",
+        "source": "WEB",
+        "client": "WEB",
+    }
+    response = _em_get(_DATACENTER_URL, params=params, timeout=15)
+    payload = response.json()
+    items = payload.get("result", {}).get("data") or []
+    if not isinstance(items, list) or not items:
+        return pd.DataFrame()
+    return _filter_financial_report_df(pd.DataFrame(items), freq, curr_date)
+
+
+def _get_financial_report_tencent(
+    code: str, report_type: str, freq: str, curr_date: str = None,
+) -> pd.DataFrame:
+    """Best-effort Tencent fallback for financial statements.
+
+    腾讯的公开页面结构不如新浪/东财稳定，所以只作为第三顺位补充源；能拿到就用，
+    拿不到也不能阻塞前两路结果。
+    """
+    url_map = {
+        "资产负债表": "zcfzb",
+        "利润表": "lrfpb",
+        "现金流量表": "xjllb",
+    }
+    prefix = _get_prefix(code)
+    url = (
+        "https://stock.finance.qq.com/corp1/"
+        f"{url_map[report_type]}_detail.php?zq=all&code={prefix}{code}"
+    )
+    response = _http_get(
+        url,
+        headers={"User-Agent": _UA, "Referer": "https://stock.finance.qq.com/"},
+        timeout=15,
+        source_name=f"Tencent {report_type} {code}",
+    )
+    tables = pd.read_html(StringIO(response.text))
+    for table in tables:
+        if table is None or table.empty:
+            continue
+        work = table.copy()
+        if isinstance(work.columns, pd.MultiIndex):
+            work.columns = [
+                " ".join(str(part).strip() for part in col if str(part).strip())
+                for col in work.columns
+            ]
+        else:
+            work.columns = [str(col).strip() for col in work.columns]
+        if len(work.columns) < 2:
+            continue
+        if not any("报" in str(col) or _re.search(r"\d{4}-\d{2}-\d{2}", str(col)) for col in work.columns[1:]):
+            continue
+        return _filter_financial_report_df(work, freq, curr_date)
+    return pd.DataFrame()
+
+
+def _get_financial_report(
+    code: str, report_type: str, freq: str, curr_date: str = None,
+) -> tuple[str | None, pd.DataFrame | None, str | None]:
+    """Try multiple statement sources and preserve failure semantics."""
+    sources = [
+        ("新浪财经 direct HTTP", _get_financial_report_sina),
+        ("东方财富 datacenter", _get_financial_report_eastmoney),
+        ("腾讯财经", _get_financial_report_tencent),
+    ]
+    statuses: list[tuple[str, str, str | None]] = []
+
+    for source_name, fetcher in sources:
+        try:
+            df = fetcher(code, report_type, freq, curr_date)
+        except Exception as exc:
+            statuses.append(("unavailable", source_name, _exception_summary(exc)))
+            continue
+        if df is not None and not df.empty:
+            return source_name, df, None
+        statuses.append(("no_data", source_name, None))
+
+    source_names = [source_name for _, source_name, _ in statuses]
+    if statuses and all(status == "no_data" for status, _, _ in statuses):
+        return (
+            None,
+            None,
+            _format_confirmed_no_data(
+                report_type,
+                f"已尝试 {'/'.join(source_names)}，接口均正常返回空结果。"
+                "这通常表示该标的当前无可用报表记录，可直接如实写入报告。",
+            ),
+        )
+
+    last_error = next(
+        (detail for status, _, detail in reversed(statuses) if status == "unavailable"),
+        None,
+    )
+    return (
+        None,
+        None,
+        _format_source_unavailable(report_type, source_names, last_error),
+    )
+
+
+def _render_financial_statement(
+    ticker: str,
+    title: str,
+    report_type: str,
+    freq: str = "quarterly",
+    curr_date: str = None,
+) -> str:
+    """Render one financial statement with source-aware fallback."""
+    try:
+        code = _normalize_ticker(ticker)
+    except ValueError as exc:
+        return _format_parameter_error(str(exc))
+
+    source_name, df, failure = _get_financial_report(
+        code, report_type, freq, curr_date
+    )
+    if failure:
+        return failure
+
+    csv_string = df.to_csv(index=False)
+    header = f"# {title} for {code} (A-stock, {freq})\n"
+    header += f"# Data source: {source_name}\n"
+    header += (
+        f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    )
+    return header + csv_string
 
 
 def get_balance_sheet(
@@ -1215,27 +1548,10 @@ def get_balance_sheet(
     freq: Annotated[str, "frequency: 'annual' or 'quarterly'"] = "quarterly",
     curr_date: Annotated[str, "current date in YYYY-MM-DD format"] = None,
 ) -> str:
-    """Get balance sheet via Sina direct HTTP API."""
-    code = _normalize_ticker(ticker)
-
-    try:
-        df = _get_financial_report_sina(code, "资产负债表", freq, curr_date)
-
-        if df.empty:
-            return f"No balance sheet data found for A-stock '{code}'"
-
-        csv_string = df.to_csv(index=False)
-
-        header = f"# Balance Sheet for {code} (A-stock, {freq})\n"
-        header += "# Data source: sina direct HTTP\n"
-        header += (
-            f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-        )
-
-        return header + csv_string
-
-    except Exception as e:
-        return f"Error retrieving balance sheet for {code}: {str(e)}"
+    """Get balance sheet with multi-source fallback."""
+    return _render_financial_statement(
+        ticker, "Balance Sheet", "资产负债表", freq, curr_date
+    )
 
 
 # ---- 5. get_cashflow ----
@@ -1246,27 +1562,10 @@ def get_cashflow(
     freq: Annotated[str, "frequency: 'annual' or 'quarterly'"] = "quarterly",
     curr_date: Annotated[str, "current date in YYYY-MM-DD format"] = None,
 ) -> str:
-    """Get cash flow statement via Sina direct HTTP API."""
-    code = _normalize_ticker(ticker)
-
-    try:
-        df = _get_financial_report_sina(code, "现金流量表", freq, curr_date)
-
-        if df.empty:
-            return f"No cash flow data found for A-stock '{code}'"
-
-        csv_string = df.to_csv(index=False)
-
-        header = f"# Cash Flow for {code} (A-stock, {freq})\n"
-        header += "# Data source: sina direct HTTP\n"
-        header += (
-            f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-        )
-
-        return header + csv_string
-
-    except Exception as e:
-        return f"Error retrieving cash flow for {code}: {str(e)}"
+    """Get cash flow statement with multi-source fallback."""
+    return _render_financial_statement(
+        ticker, "Cash Flow", "现金流量表", freq, curr_date
+    )
 
 
 # ---- 6. get_income_statement ----
@@ -1277,27 +1576,10 @@ def get_income_statement(
     freq: Annotated[str, "frequency: 'annual' or 'quarterly'"] = "quarterly",
     curr_date: Annotated[str, "current date in YYYY-MM-DD format"] = None,
 ) -> str:
-    """Get income statement via Sina direct HTTP API."""
-    code = _normalize_ticker(ticker)
-
-    try:
-        df = _get_financial_report_sina(code, "利润表", freq, curr_date)
-
-        if df.empty:
-            return f"No income statement data found for A-stock '{code}'"
-
-        csv_string = df.to_csv(index=False)
-
-        header = f"# Income Statement for {code} (A-stock, {freq})\n"
-        header += "# Data source: sina direct HTTP\n"
-        header += (
-            f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-        )
-
-        return header + csv_string
-
-    except Exception as e:
-        return f"Error retrieving income statement for {code}: {str(e)}"
+    """Get income statement with multi-source fallback."""
+    return _render_financial_statement(
+        ticker, "Income Statement", "利润表", freq, curr_date
+    )
 
 
 # ---- 7. get_news ----
@@ -1614,13 +1896,19 @@ def get_profit_forecast(
     curr_date: Annotated[str, "current date — 用于判断是否在复盘历史"] = None,
 ) -> str:
     """Get consensus EPS forecasts with forward valuation (同花顺 direct HTTP)."""
-    code = _normalize_ticker(ticker)
+    try:
+        code = _normalize_ticker(ticker)
+    except ValueError as exc:
+        return _format_parameter_error(str(exc))
 
     try:
         df = _ths_eps_forecast(code)
 
         if df is None or df.empty:
-            return f"No analyst coverage found for A-stock '{code}'"
+            return _format_confirmed_no_data(
+                "机构一致预期",
+                "接口正常返回但未发现有效覆盖记录。这是事实，可直接写入报告。",
+            )
 
         lines = [
             f"# Consensus EPS Forecast for {code} (A-stock)",
@@ -1634,11 +1922,11 @@ def get_profit_forecast(
 
         eps_by_year = {}
         for _, row in df.iterrows():
-            year = str(row.iloc[0]) if len(row) > 0 else ""
-            count_val = row.iloc[1] if len(row) > 1 else 0
-            mean_eps_val = row.iloc[3] if len(row) > 3 else 0
-            min_eps_val = row.iloc[2] if len(row) > 2 else "N/A"
-            max_eps_val = row.iloc[4] if len(row) > 4 else "N/A"
+            year = str(row.get("年度", "")) if hasattr(row, "get") else ""
+            count_val = row.get("预测机构数", 0) if hasattr(row, "get") else 0
+            mean_eps_val = row.get("均值", 0) if hasattr(row, "get") else 0
+            min_eps_val = row.get("最小值", "N/A") if hasattr(row, "get") else "N/A"
+            max_eps_val = row.get("最大值", "N/A") if hasattr(row, "get") else "N/A"
             try:
                 count = int(count_val)
             except (ValueError, TypeError):
@@ -1699,7 +1987,11 @@ def get_profit_forecast(
         return "\n".join(lines)
 
     except Exception as e:
-        return f"Error retrieving profit forecast for {code}: {str(e)}"
+        return _format_source_unavailable(
+            "机构一致预期",
+            ["同花顺"],
+            _exception_summary(e),
+        )
 
 
 # ---- 11. get_hot_stocks ----
@@ -2203,11 +2495,17 @@ def get_dragon_tiger_board(
         Formatted text with LHB appearances, top buyer/seller seats,
         and institutional activity.
     """
-    code = _normalize_ticker(ticker)
+    try:
+        code = _normalize_ticker(ticker)
+    except ValueError as exc:
+        return _format_parameter_error(str(exc))
     end_dt = datetime.strptime(trade_date, "%Y-%m-%d")
     start_dt = end_dt - pd.Timedelta(days=look_back_days)
     start_date_str = start_dt.strftime("%Y-%m-%d")
     lines = [f"# 龙虎榜数据 | {code} | {trade_date} (近{look_back_days}日)"]
+    data = []
+    buy_data = []
+    sell_data = []
 
     # 1. 上榜记录 — eastmoney datacenter direct HTTP
     try:
@@ -2223,7 +2521,13 @@ def get_dragon_tiger_board(
             sort_types="-1",
         )
         if not data:
-            lines.append(f"\n近{look_back_days}日未上龙虎榜。")
+            lines.append(
+                "\n"
+                + _format_confirmed_no_data(
+                    "龙虎榜",
+                    f"近{look_back_days}日未上龙虎榜。这是事实，可直接写入报告。",
+                )
+            )
         else:
             lines.append(f"\n## 上榜记录 ({len(data)} 次)")
             lines.append("日期 | 原因 | 净买入(万) | 换手率")
@@ -2237,7 +2541,11 @@ def get_dragon_tiger_board(
                     f"| {turnover:.2f}%"
                 )
     except Exception as e:
-        lines.append(f"龙虎榜列表查询失败: {e}")
+        return _format_source_unavailable(
+            "龙虎榜",
+            ["东方财富 datacenter"],
+            _exception_summary(e),
+        )
 
     # 2. 最近上榜的买卖席位 — eastmoney datacenter direct HTTP
     try:
@@ -2285,7 +2593,12 @@ def get_dragon_tiger_board(
                         f"| {buy_amt:.0f} | {sell_amt:.0f} | {net:.0f}"
                     )
     except Exception:
-        pass
+        lines.append(
+            _format_source_unavailable(
+                "龙虎榜席位明细",
+                ["东方财富 datacenter"],
+            )
+        )
 
     # 3. 机构动向 — 从买卖席位明细筛选机构专用席位 (OPERATEDEPT_CODE="0")
     try:
@@ -2331,8 +2644,15 @@ def get_lockup_expiry(
         Formatted text with historical unlock records and upcoming
         expiry calendar with impact metrics.
     """
-    code = _normalize_ticker(ticker)
+    try:
+        code = _normalize_ticker(ticker)
+    except ValueError as exc:
+        return _format_parameter_error(str(exc))
     lines = [f"# 限售解禁日历 | {code} | {trade_date}"]
+    history_data = []
+    upcoming_data = []
+    history_failed = None
+    upcoming_failed = None
 
     # 1. 历史解禁记录 — eastmoney datacenter direct HTTP
     try:
@@ -2356,7 +2676,7 @@ def get_lockup_expiry(
         else:
             lines.append("\n无历史解禁记录。")
     except Exception as e:
-        lines.append(f"个股解禁查询失败: {e}")
+        history_failed = e
 
     # 2. 未来待解禁 — eastmoney datacenter direct HTTP
     try:
@@ -2387,7 +2707,48 @@ def get_lockup_expiry(
         else:
             lines.append(f"\n未来 {forward_days} 天无待解禁。")
     except Exception as e:
-        lines.append(f"解禁日历查询失败: {e}")
+        upcoming_failed = e
+
+    if history_failed and upcoming_failed:
+        return _format_source_unavailable(
+            "限售解禁",
+            ["东方财富 datacenter"],
+            _exception_summary(upcoming_failed),
+        )
+
+    if (
+        not history_failed
+        and not upcoming_failed
+        and not history_data
+        and not upcoming_data
+    ):
+        return "\n".join(
+            [
+                lines[0],
+                "",
+                _format_confirmed_no_data(
+                    "限售解禁",
+                    "无历史解禁记录，未来窗口内也无待解禁计划。这是事实，可直接写入报告。",
+                ),
+            ]
+        )
+
+    if history_failed:
+        lines.append(
+            _format_source_unavailable(
+                "历史解禁记录",
+                ["东方财富 datacenter"],
+                _exception_summary(history_failed),
+            )
+        )
+    if upcoming_failed:
+        lines.append(
+            _format_source_unavailable(
+                "未来解禁日历",
+                ["东方财富 datacenter"],
+                _exception_summary(upcoming_failed),
+            )
+        )
 
     return "\n".join(lines)
 
@@ -2412,7 +2773,10 @@ def get_industry_comparison(
         Formatted text with sector performance ranking, highlighting
         the sector the target stock belongs to.
     """
-    code = _normalize_ticker(ticker)
+    try:
+        code = _normalize_ticker(ticker)
+    except ValueError as exc:
+        return _format_parameter_error(str(exc))
     lines = [f"# 行业横向对比 | {code} | {trade_date}"]
 
     # 东财 push2 行业板块排名 (direct HTTP, replaces 同花顺 which has 401)
@@ -2456,8 +2820,16 @@ def get_industry_comparison(
                     lines.append(f"  ... (showing top/bottom {top_n})")
                     break
         else:
-            lines.append("行业数据获取为空。")
+            return _format_source_unavailable(
+                "行业对比",
+                ["东方财富 push2"],
+                "Empty response",
+            )
     except Exception as e:
-        lines.append(f"行业对比查询失败: {e}")
+        return _format_source_unavailable(
+            "行业对比",
+            ["东方财富 push2"],
+            _exception_summary(e),
+        )
 
     return "\n".join(lines)
