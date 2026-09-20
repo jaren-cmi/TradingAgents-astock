@@ -18,6 +18,7 @@ from typing import Annotated
 from datetime import date, datetime, timedelta, timezone
 from dateutil.relativedelta import relativedelta
 import contextlib
+from http.client import RemoteDisconnected
 import json as _json
 import os
 import logging
@@ -59,6 +60,9 @@ def _is_retryable_http_error(exc: Exception) -> bool:
         (
             _requests.exceptions.Timeout,
             _requests.exceptions.ConnectionError,
+            _requests.exceptions.ChunkedEncodingError,
+            RemoteDisconnected,
+            ConnectionResetError,
         ),
     ):
         return True
@@ -212,6 +216,15 @@ def _normalize_ticker(symbol: str) -> str:
     code = safe_ticker_component(s)
     _reject_non_a_share(symbol, code)
     return code
+
+
+def _ticker_with_exchange_suffix(code: str) -> str:
+    """Return 6-digit A-share code with Eastmoney-style exchange suffix."""
+    if code.startswith("92") or code.startswith("8"):
+        return f"{code}.BJ"
+    if code.startswith(("6", "9")):
+        return f"{code}.SH"
+    return f"{code}.SZ"
 
 
 # ---------------------------------------------------------------------------
@@ -1421,6 +1434,90 @@ def _apply_financial_statement_filters(
     return df.head(8).reset_index(drop=True)
 
 
+_FINANCIAL_COMMON_ALIASES = {
+    "REPORT_DATE": "报告日",
+    "REPORT_DATE_DATE": "报告日",
+    "REPORT_DATE_NAME": "报告日",
+    "NOTICE_DATE": "公告日",
+    "SECURITY_CODE": "证券代码",
+    "SECUCODE": "证券代码",
+    "SECURITY_NAME_ABBR": "证券简称",
+    "SECURITY_NAME": "证券简称",
+}
+
+_FINANCIAL_FIELD_ALIASES = {
+    "资产负债表": {
+        "TOTAL_ASSETS": "资产总计",
+        "TOTAL_LIABILITIES": "负债合计",
+        "TOTAL_LIAB": "负债合计",
+        "TOTAL_EQUITY": "股东权益合计",
+        "TOTAL_SHAREHOLDERS_EQUITY": "股东权益合计",
+        "MONETARYFUNDS": "货币资金",
+    },
+    "利润表": {
+        "TOTAL_REVENUE": "营业总收入",
+        "OPERATE_INCOME": "营业收入",
+        "NETPROFIT": "净利润",
+        "PARENT_NETPROFIT": "归属于母公司股东的净利润",
+    },
+    "现金流量表": {
+        "NETCASH_OPERATE": "经营活动产生的现金流量净额",
+        "NETCASH_INVEST": "投资活动产生的现金流量净额",
+        "NETCASH_FINANCE": "筹资活动产生的现金流量净额",
+        "CASH_EQU_END": "期末现金及现金等价物余额",
+    },
+}
+
+
+def _normalize_financial_statement_df(
+    df: pd.DataFrame,
+    report_type: str,
+) -> pd.DataFrame:
+    """Unify statement field names across Sina / Eastmoney fallback sources."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+    work = df.copy()
+    aliases = {
+        **_FINANCIAL_COMMON_ALIASES,
+        **_FINANCIAL_FIELD_ALIASES.get(report_type, {}),
+    }
+    renamed = {}
+    for source_col, canonical_col in aliases.items():
+        if source_col in work.columns and canonical_col not in work.columns:
+            renamed[source_col] = canonical_col
+    if renamed:
+        work = work.rename(columns=renamed)
+    return work
+
+
+def _eastmoney_financial_report_params(code: str, report_type: str) -> dict[str, str]:
+    """Build the verified Eastmoney datacenter query for one financial statement.
+
+    External A-share tool tests and issue repros agree that the A-share balance
+    sheet uses `RPT_F10_FINANCE_GBALANCE` with dotted `SECUCODE="600519.SH"`
+    style filters; the old `RPT_F10_FINANCE_BALANCE` + bare `SECURITY_CODE`
+    shape is the suspected root cause of the 688256 balance-sheet miss.  Income
+    and cash-flow statements keep their working G-prefixed report names.
+    """
+    report_name_map = {
+        "资产负债表": "RPT_F10_FINANCE_GBALANCE",
+        "利润表": "RPT_F10_FINANCE_GINCOME",
+        "现金流量表": "RPT_F10_FINANCE_GCASHFLOW",
+    }
+    secucode = _ticker_with_exchange_suffix(code)
+    return {
+        "reportName": report_name_map[report_type],
+        "columns": "ALL",
+        "filter": f'(SECUCODE="{secucode}")',
+        "pageNumber": "1",
+        "pageSize": "20",
+        "sortColumns": "REPORT_DATE",
+        "sortTypes": "-1",
+        "source": "WEB",
+        "client": "WEB",
+    }
+
+
 def _get_financial_report_sina(
     code: str, report_type: str, freq: str, curr_date: str = None,
 ) -> pd.DataFrame:
@@ -1459,7 +1556,8 @@ def _get_financial_report_sina(
     if not isinstance(items, list) or not items:
         return pd.DataFrame()
 
-    return _apply_financial_statement_filters(pd.DataFrame(items), freq, curr_date)
+    df = _normalize_financial_statement_df(pd.DataFrame(items), report_type)
+    return _apply_financial_statement_filters(df, freq, curr_date)
 
 
 def _get_financial_report_eastmoney(
@@ -1470,29 +1568,14 @@ def _get_financial_report_eastmoney(
     单一源故障会让三张表同时归零；这里补东财备用源，避免基本面分析在财报全失效时
     只能靠一致预期硬撑，导致报告可信度明显下降。
     """
-    report_name_map = {
-        "资产负债表": "RPT_F10_FINANCE_BALANCE",
-        "利润表": "RPT_F10_FINANCE_GINCOME",
-        "现金流量表": "RPT_F10_FINANCE_GCASHFLOW",
-    }
-    report_name = report_name_map[report_type]
-    params = {
-        "reportName": report_name,
-        "columns": "ALL",
-        "filter": f'(SECURITY_CODE="{code}")',
-        "pageNumber": "1",
-        "pageSize": "20",
-        "sortColumns": "REPORT_DATE",
-        "sortTypes": "-1",
-        "source": "WEB",
-        "client": "WEB",
-    }
+    params = _eastmoney_financial_report_params(code, report_type)
     response = _em_get(_DATACENTER_URL, params=params, timeout=15)
     payload = response.json()
     items = payload.get("result", {}).get("data") or []
     if not isinstance(items, list) or not items:
         return pd.DataFrame()
-    return _apply_financial_statement_filters(pd.DataFrame(items), freq, curr_date)
+    df = _normalize_financial_statement_df(pd.DataFrame(items), report_type)
+    return _apply_financial_statement_filters(df, freq, curr_date)
 
 
 def _get_financial_report_tencent(
@@ -1537,6 +1620,7 @@ def _get_financial_report_tencent(
             continue
         if not any("报" in str(col) or _re.search(r"\d{4}-\d{2}-\d{2}", str(col)) for col in work.columns[1:]):
             continue
+        work = _normalize_financial_statement_df(work, report_type)
         filtered = _apply_financial_statement_filters(work, freq, curr_date)
         if not filtered.empty:
             return filtered
@@ -2875,7 +2959,11 @@ def get_industry_comparison(
             "fs": "m:90+t:2",
             "fields": "f2,f3,f4,f12,f13,f14,f104,f105,f128,f136,f140,f141,f207",
         }
-        r = _em_get(url, params=params, timeout=15)
+        headers = {
+            "User-Agent": _UA,
+            "Referer": "https://quote.eastmoney.com/center/boardlist.html#industry_board",
+        }
+        r = _em_get(url, params=params, headers=headers, timeout=15)
         d = r.json()
         items = d.get("data", {}).get("diff", [])
 
