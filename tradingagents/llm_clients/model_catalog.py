@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
 
-from .model_discovery import get_discovered_model_ids
+from .model_discovery import DiscoveryResult, get_discovered_model_ids, get_discovery_result
 
 ModelOption = Tuple[str, str]
 ProviderModeOptions = Dict[str, Dict[str, List[ModelOption]]]
@@ -132,6 +132,20 @@ MODEL_OPTIONS: ProviderModeOptions = {
             ("Custom model ID", "custom"),
         ],
     },
+    "openrouter": {
+        "quick": [
+            ("OpenRouter Auto", "openrouter/auto"),
+            ("Custom model ID", "custom"),
+        ],
+        "deep": [
+            ("OpenRouter Auto", "openrouter/auto"),
+            ("Custom model ID", "custom"),
+        ],
+    },
+    "openai_compatible": {
+        "quick": [("Custom model ID", "custom")],
+        "deep": [("Custom model ID", "custom")],
+    },
     # OpenRouter: fetched dynamically. Azure: any deployed model name.
     "ollama": {
         "quick": [
@@ -175,11 +189,50 @@ def _ensure_custom_option(options: List[ModelOption]) -> List[ModelOption]:
 
 
 def get_dynamic_model_options(
-    provider: str, mode: str, base_url: Optional[str] = None
+    provider: str,
+    mode: str,
+    base_url: Optional[str] = None,
+    discovery_result: Optional[DiscoveryResult] = None,
 ) -> List[ModelOption]:
-    """Return dynamically discovered model IDs with hardcoded fallback."""
+    """Return dynamic model IDs plus fallback entries, always keeping custom last."""
     fallback = _ensure_custom_option(list(get_model_options(provider, mode)))
-    discovered = get_discovered_model_ids(provider, base_url=base_url)
+    discovered = (
+        discovery_result.model_ids
+        if discovery_result is not None
+        else get_discovered_model_ids(provider, base_url=base_url)
+    )
     if not discovered:
         return fallback
-    return _ensure_custom_option([(model_id, model_id) for model_id in discovered])
+
+    merged: List[ModelOption] = []
+    seen_values: set[str] = set()
+    for model_id in discovered:
+        if model_id in seen_values or model_id == "custom":
+            continue
+        merged.append((model_id, model_id))
+        seen_values.add(model_id)
+
+    for option in fallback:
+        value = option[1]
+        if value in seen_values or value == "custom":
+            continue
+        merged.append(option)
+        seen_values.add(value)
+
+    return _ensure_custom_option(merged)
+
+
+def get_dynamic_model_selection(
+    provider: str, mode: str, base_url: Optional[str] = None
+) -> tuple[List[ModelOption], DiscoveryResult]:
+    """Return merged model options and the cached discovery result behind them."""
+    discovery_result = get_discovery_result(provider, base_url=base_url)
+    return (
+        get_dynamic_model_options(
+            provider,
+            mode,
+            base_url=base_url,
+            discovery_result=discovery_result,
+        ),
+        discovery_result,
+    )

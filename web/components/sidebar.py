@@ -13,7 +13,7 @@ import streamlit as st
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.checkpointer import clear_checkpoint
 from tradingagents.llm_clients.model_catalog import MODEL_OPTIONS, get_dynamic_model_options
-from tradingagents.llm_clients.model_discovery import _DYNAMIC_PROVIDERS, get_discovered_model_ids
+from tradingagents.llm_clients.model_discovery import DiscoveryResult, clear_model_discovery_cache, get_discovery_result
 from web.history import (
     clear_incomplete_task,
     get_history,
@@ -102,6 +102,7 @@ _PROVIDERS: list[tuple[str, str]] = [
 
 _PROVIDER_DISPLAY = [name for name, _ in _PROVIDERS]
 _PROVIDER_KEYS = [key for _, key in _PROVIDERS]
+_PROVIDER_LABELS = {key: name for name, key in _PROVIDERS}
 
 
 def _resolve_user_input(raw: str) -> tuple[str, str | None]:
@@ -214,12 +215,21 @@ def _render_llm_config() -> None:
     st.session_state["llm_provider"] = provider_key
 
     if provider_key in MODEL_OPTIONS:
-        base_url_override = (st.session_state.get("llm_base_url") or os.getenv("BACKEND_URL") or "").strip() or None
-        quick_options = get_dynamic_model_options(provider_key, "quick", base_url=base_url_override)
-        deep_options = get_dynamic_model_options(provider_key, "deep", base_url=base_url_override)
-
-        if provider_key in _DYNAMIC_PROVIDERS and not get_discovered_model_ids(provider_key, base_url=base_url_override):
-            st.caption("未能从供应商获取最新模型列表（可能未配置对应 API Key 或该网关未提供 /models 接口），已使用内置列表。")
+        base_url_override = _base_url_override()
+        discovery_result = get_discovery_result(provider_key, base_url=base_url_override)
+        quick_options = get_dynamic_model_options(
+            provider_key,
+            "quick",
+            base_url=base_url_override,
+            discovery_result=discovery_result,
+        )
+        deep_options = get_dynamic_model_options(
+            provider_key,
+            "deep",
+            base_url=base_url_override,
+            discovery_result=discovery_result,
+        )
+        st.caption(_discovery_caption(provider_key, discovery_result))
 
         quick_labels = [label for label, _ in quick_options]
         quick_values = [value for _, value in quick_options]
@@ -275,6 +285,9 @@ def _render_llm_config() -> None:
             "已选「OpenAI 兼容（自定义）」：**Base URL 必填**（你的网关，走标准 Chat "
             "Completions），模型 ID 手动填写，Key 在 .env 设 `OPENAI_COMPATIBLE_API_KEY`。"
         )
+    if st.button("🔄 刷新模型列表", key="refresh_model_discovery", use_container_width=True):
+        clear_model_discovery_cache()
+        st.rerun()
 
     # ── 个人 Claude 订阅额度（可选，仅个人自用）────────────────────────
     _scope_labels = [
@@ -319,6 +332,26 @@ def _render_llm_config() -> None:
                 "父进程保留它，是为了让 `anthropic` 仍能作为撞额度后的降级 provider。"
                 "如果你并不打算保留付费降级，可在 .env 里清掉它。"
             )
+
+
+def _base_url_override() -> str | None:
+    return (st.session_state.get("llm_base_url") or os.getenv("BACKEND_URL") or "").strip() or None
+
+
+def _discovery_caption(provider_key: str, discovery_result: DiscoveryResult) -> str:
+    provider_label = _PROVIDER_LABELS.get(provider_key, provider_key)
+    if discovery_result.status == "ok":
+        return f"✅ 已从 {provider_label} 实时获取 {len(discovery_result.model_ids)} 个模型"
+    if discovery_result.status == "no_api_key":
+        return f"ℹ️ 使用内置清单（{discovery_result.detail}，配置后可自动获取最新模型）"
+    if discovery_result.status == "http_error":
+        short_reason = discovery_result.detail.split(" from ", 1)[0]
+        return f"⚠️ 使用内置清单（实时获取失败：{short_reason}）。可在「API Base URL」填写正确端点后重试"
+    if discovery_result.status == "network_error":
+        return f"⚠️ 使用内置清单（实时获取失败：{discovery_result.detail}）"
+    if discovery_result.status == "empty":
+        return f"ℹ️ 使用内置清单（{discovery_result.detail}）"
+    return f"ℹ️ 使用内置清单（{discovery_result.detail}）"
 
 
 def render_sidebar() -> None:
