@@ -1376,7 +1376,7 @@ def _filter_financial_report_columns_by_header(
 
     cutoff = pd.to_datetime(curr_date) if curr_date else None
     first_col = work.columns[0]
-    kept_cols = [first_col]
+    dated_cols: list[tuple[pd.Timestamp, str]] = []
     for col in work.columns[1:]:
         match = _re.search(r"(\d{4}[-/]\d{2}[-/]\d{2})", str(col))
         if not match:
@@ -1390,11 +1390,13 @@ def _filter_financial_report_columns_by_header(
             report_date.month == 12 and report_date.day == 31
         ):
             continue
-        kept_cols.append(col)
+        dated_cols.append((report_date, col))
 
-    if len(kept_cols) <= 1:
+    if not dated_cols:
         return pd.DataFrame()
-    return work.loc[:, kept_cols[:9]].reset_index(drop=True)
+    dated_cols.sort(key=lambda item: item[0], reverse=True)
+    kept_cols = [first_col] + [col for _, col in dated_cols[:8]]
+    return work.loc[:, kept_cols].reset_index(drop=True)
 
 
 def _apply_financial_statement_filters(
@@ -1512,6 +1514,8 @@ def _get_financial_report_tencent(
         source_name=f"Tencent {report_type} {code}",
     )
     tables = pd.read_html(StringIO(response.text))
+    if not tables:
+        raise ValueError(f"Tencent {report_type} table layout missing")
     for table in tables:
         if table is None or table.empty:
             continue
@@ -1530,7 +1534,7 @@ def _get_financial_report_tencent(
         filtered = _apply_financial_statement_filters(work, freq, curr_date)
         if not filtered.empty:
             return filtered
-    return pd.DataFrame()
+    raise ValueError(f"Tencent {report_type} table layout unrecognized")
 
 
 def _get_financial_report(

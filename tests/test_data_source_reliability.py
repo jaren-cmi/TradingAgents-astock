@@ -17,8 +17,9 @@ def _report_with_table(*markers: str) -> str:
     )
 
 
-def test_request_with_retry_retries_timeout():
+def test_request_with_retry_retries_timeout(monkeypatch):
     attempts = {"count": 0}
+    delays = []
 
     class _Resp:
         status_code = 200
@@ -29,14 +30,17 @@ def test_request_with_retry_retries_timeout():
             raise requests.exceptions.Timeout("slow")
         return _Resp()
 
+    monkeypatch.setattr(a_stock.time, "sleep", delays.append)
     resp = a_stock._request_with_retry(flaky, "test source")
 
     assert attempts["count"] == 3
+    assert delays == [0.5, 1.0]
     assert resp.status_code == 200
 
 
-def test_request_with_retry_does_not_retry_404():
+def test_request_with_retry_does_not_retry_404(monkeypatch):
     attempts = {"count": 0}
+    delays = []
 
     def bad_request():
         attempts["count"] += 1
@@ -44,10 +48,12 @@ def test_request_with_retry_does_not_retry_404():
         exc.response = type("Resp", (), {"status_code": 404})()
         raise exc
 
+    monkeypatch.setattr(a_stock.time, "sleep", delays.append)
     with pytest.raises(requests.exceptions.HTTPError):
         a_stock._request_with_retry(bad_request, "test source")
 
     assert attempts["count"] == 1
+    assert delays == []
 
 
 def test_financial_report_falls_back_to_eastmoney(monkeypatch):
