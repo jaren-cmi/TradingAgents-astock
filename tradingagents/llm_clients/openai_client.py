@@ -5,7 +5,7 @@ from typing import Any, Optional
 from langchain_core.messages import AIMessage
 from langchain_openai import ChatOpenAI
 
-from .base_client import BaseLLMClient, normalize_content
+from .base_client import BaseLLMClient, normalize_content, warn_if_truncated
 from .capabilities import get_capabilities
 from .provider_config import PROVIDER_CONFIG
 from .validators import validate_model
@@ -29,7 +29,9 @@ class NormalizedChatOpenAI(ChatOpenAI):
     """
 
     def invoke(self, input, config=None, **kwargs):
-        return normalize_content(super().invoke(input, config, **kwargs))
+        response = super().invoke(input, config, **kwargs)
+        warn_if_truncated(response, self.model_name)
+        return normalize_content(response)
 
     def with_structured_output(self, schema, *, method=None, **kwargs):
         capabilities = get_capabilities(self.model_name)
@@ -133,7 +135,7 @@ class MinimaxChatOpenAI(NormalizedChatOpenAI):
 
 # Kwargs forwarded from user config to ChatOpenAI
 _PASSTHROUGH_KWARGS = (
-    "timeout", "max_retries", "reasoning_effort",
+    "timeout", "max_retries", "reasoning_effort", "max_tokens",
     "api_key", "callbacks", "http_client", "http_async_client",
 )
 
@@ -178,8 +180,12 @@ class OpenAIClient(BaseLLMClient):
                     "（例如 https://your-relay.example/v1）。"
                 )
             llm_kwargs["base_url"] = self.base_url
+            # Per-role api_key (from role_llms spec) wins over env vars, so
+            # several OpenAI-compatible gateways with different keys can run
+            # side by side (e.g. opencode-go + a local proxy relay).
             api_key = (
-                os.environ.get("OPENAI_COMPATIBLE_API_KEY")
+                self.kwargs.get("api_key")
+                or os.environ.get("OPENAI_COMPATIBLE_API_KEY")
                 or os.environ.get("OPENAI_API_KEY")
             )
             if api_key:
