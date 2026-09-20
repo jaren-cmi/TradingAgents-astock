@@ -31,6 +31,15 @@ FAILURE_MARKERS = [
 ]
 
 
+def _data_marker_counts(report: str) -> dict[str, int]:
+    """Classify report markers by semantics, not just raw 'missing' count."""
+    return {
+        "source_unavailable": report.count("[数据源不可用"),
+        "confirmed_no_data": report.count("[确认无数据"),
+        "missing": report.count("[数据缺失"),
+    }
+
+
 def _hard_check_report(analyst_type: str, report: str) -> tuple:
     """Run hard checks on a single report. Returns (grade, detail)."""
     if not report or not report.strip():
@@ -48,18 +57,28 @@ def _hard_check_report(analyst_type: str, report: str) -> tuple:
         return ("D", f"报告主要由失败信息构成 ({failure_count} 处)")
 
     has_table = "|" in report and "---" in report
-    missing_count = report.count("[数据缺失")
+    marker_counts = _data_marker_counts(report)
+    blocking_count = (
+        marker_counts["source_unavailable"] + marker_counts["missing"]
+    )
 
     issues = []
     if not has_table:
         issues.append("缺少汇总表格")
-    if missing_count > 0:
-        issues.append(f"{missing_count} 处数据缺失")
+    if marker_counts["source_unavailable"] > 0:
+        issues.append(f"{marker_counts['source_unavailable']} 处数据源故障")
+    if marker_counts["missing"] > 0:
+        issues.append(f"{marker_counts['missing']} 处未说明原因的数据缺失")
+    if marker_counts["confirmed_no_data"] > 0:
+        issues.append(f"{marker_counts['confirmed_no_data']} 处经确认无数据")
 
-    if missing_count >= 3:
+    if blocking_count >= 3:
         return ("C", "；".join(issues))
-    if not has_table or missing_count > 0:
+    if not has_table or blocking_count > 0:
         return ("B", "；".join(issues) if issues else "基本合格")
+
+    if marker_counts["confirmed_no_data"] > 0:
+        return ("A", "；".join(issues))
 
     return ("A", f"完整 ({length} chars)")
 

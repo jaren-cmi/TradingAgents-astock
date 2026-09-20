@@ -31,6 +31,18 @@
 
 ---
 
+## 2026-09-20 数据缺失专项核查（688256 寒武纪）
+
+- 在当前 sandbox 内对 `688256` 实测 `get_balance_sheet` / `get_cashflow` / `get_income_statement` /
+  `get_industry_comparison` / `get_profit_forecast` / `get_dragon_tiger_board` /
+  `get_lockup_expiry` 时，新浪 / 东财 / 腾讯 / 同花顺相关域名均出现 **DNS 解析失败**。
+- 因此本环境下无法继续区分「688256 真的无数据」还是「上游返回空值」；但已验证这类网络级故障现在会统一返回
+  `[数据源不可用]`，不会再伪装成“该标的没有数据”。
+- `get_profit_forecast` 另补了一份同花顺 `worth.html` 样式样本测试，确认在拿到完整表格时不再误报格式错误；
+  后续若在可联网环境复测 688256，优先看真实返回是否命中该解析路径。
+
+---
+
 ## 决策与选型记录
 
 ### 决策一:在原版上 fork,不在 CN 版上 fork
