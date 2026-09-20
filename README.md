@@ -184,6 +184,8 @@ ZHIPU_API_KEY=xxx
 # ── 方案 D：通义千问 Qwen ────────────────────────────
 DASHSCOPE_API_KEY=sk-xxx
 # 申请地址：https://dashscope.console.aliyun.com/
+# Web/CLI 默认会优先显示 Qwen 3.8 Max（深度）和 Qwen 3.8 Flash（快速）；
+# 若阿里新发型号，也可直接选「Custom model ID」手填，不必等代码更新。
 
 # ── 方案 E：OpenAI ───────────────────────────────────
 OPENAI_API_KEY=sk-xxx
