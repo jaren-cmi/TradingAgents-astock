@@ -139,8 +139,8 @@ def _provider_settings(provider: str, base_url: Optional[str] = None) -> _Provid
         # If we only probe one endpoint, a 401 is silently indistinguishable from
         # "discovery is broken" for users on the other site.
         base_urls = (
-            _normalize_base_url(_GLM_DOMESTIC_BASE_URL),
             _normalize_base_url(_GLM_GLOBAL_BASE_URL),
+            _normalize_base_url(_GLM_DOMESTIC_BASE_URL),
         )
     else:
         base_urls = (_normalize_base_url(base_url or default_base),)

@@ -34,7 +34,7 @@ class ModelDiscoveryTests(unittest.TestCase):
     def test_get_discovered_model_ids_parses_and_sorts_latest_first(self, mock_get):
         mock_get.return_value = _ok_response(
             ["glm-4.7", "glm-5", "glm-5-preview", "glm-5"],
-            "https://open.bigmodel.cn/api/paas/v4/models",
+            "https://api.z.ai/api/paas/v4/models",
         )
 
         discovered = get_discovered_model_ids("glm")
@@ -42,7 +42,7 @@ class ModelDiscoveryTests(unittest.TestCase):
         self.assertEqual(discovered, ["glm-5", "glm-5-preview", "glm-4.7"])
         mock_get.assert_called_once()
         args, kwargs = mock_get.call_args
-        self.assertEqual(args, ("https://open.bigmodel.cn/api/paas/v4/models",))
+        self.assertEqual(args, ("https://api.z.ai/api/paas/v4/models",))
         self.assertEqual(kwargs["timeout"], 5)
         self.assertTrue(kwargs["headers"]["Authorization"].startswith("Bearer "))
         self.assertIn("zhipu-token", kwargs["headers"]["Authorization"])
@@ -143,12 +143,12 @@ class ModelDiscoveryTests(unittest.TestCase):
     @patch("tradingagents.llm_clients.model_discovery.requests.get")
     def test_glm_tries_alternate_endpoint_and_uses_successful_one(self, mock_get):
         def side_effect(url, headers, timeout):
-            if url == "https://open.bigmodel.cn/api/paas/v4/models":
-                return _ok_response(["glm-5.1", "glm-5"], url)
-            response = Mock()
-            response.status_code = 401
-            response.url = url
-            return response
+            if url == "https://api.z.ai/api/paas/v4/models":
+                response = Mock()
+                response.status_code = 401
+                response.url = url
+                return response
+            return _ok_response(["glm-5.1", "glm-5"], url)
 
         mock_get.side_effect = side_effect
 
