@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 PROVIDER_CONFIG = {
+    "openai": ("https://api.openai.com/v1", "OPENAI_API_KEY"),
     "xai": ("https://api.x.ai/v1", "XAI_API_KEY"),
     "deepseek": ("https://api.deepseek.com", "DEEPSEEK_API_KEY"),
     "qwen": ("https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "DASHSCOPE_API_KEY"),
