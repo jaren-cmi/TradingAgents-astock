@@ -66,6 +66,28 @@ def _redact_text(value: Any) -> str:
     return text
 
 
+def _mask_inline_secret_fields(text: str) -> str:
+    patterns = [
+        (
+            re.compile(
+                r'(?i)\b(authorization|api[_-]?key|apikey|token|secret|password)\b'
+                r'(\s*[:=]\s*[\'"]?)([^\'"\s,}]+)'
+            ),
+            r"\1\2***REDACTED***",
+        ),
+        (
+            re.compile(
+                r'(?i)([?&](?:authorization|api[_-]?key|apikey|token|secret|password)=)([^&\s]+)'
+            ),
+            r"\1***REDACTED***",
+        ),
+    ]
+    masked = text
+    for pattern, replacement in patterns:
+        masked = pattern.sub(replacement, masked)
+    return masked
+
+
 def _sanitize_mapping(mapping: dict[str, Any] | None) -> dict[str, Any]:
     if not mapping:
         return {}
@@ -407,7 +429,11 @@ def diagnose_industry_comparison(
 
 
 def render_diagnosis_report(sections: list[str]) -> str:
-    return "\n\n".join(_redact_text(section) for section in sections if section)
+    return "\n\n".join(
+        _mask_inline_secret_fields(_redact_text(section))
+        for section in sections
+        if section
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

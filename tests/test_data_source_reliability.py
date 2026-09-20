@@ -308,6 +308,19 @@ def test_diagnosis_report_redacts_env_secrets(monkeypatch):
     assert "***REDACTED***" in rendered
 
 
+def test_diagnosis_report_redacts_inline_secret_fields():
+    rendered = diagnose_datasource.render_diagnosis_report(
+        [
+            "Authorization: inline-secret",
+            "https://example.com/path?token=inline-token&ok=1",
+        ]
+    )
+
+    assert "inline-secret" not in rendered
+    assert "inline-token" not in rendered
+    assert rendered.count("***REDACTED***") >= 2
+
+
 def test_lockup_empty_results_are_confirmed_no_data(monkeypatch):
     monkeypatch.setattr(a_stock, "_eastmoney_datacenter", lambda *args, **kwargs: [])
 
