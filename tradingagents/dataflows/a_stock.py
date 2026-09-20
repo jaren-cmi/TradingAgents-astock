@@ -1349,6 +1349,12 @@ def _filter_financial_report_df(
 
     if freq.lower() == "annual" and report_dates is not None:
         work = work[(report_dates.dt.month == 12) & (report_dates.dt.day == 31)]
+        report_dates = _financial_report_date_series(work)
+
+    if report_dates is not None and not work.empty:
+        work = work.assign(__report_date=report_dates).sort_values(
+            "__report_date", ascending=False
+        ).drop(columns="__report_date")
 
     return work.head(8).reset_index(drop=True)
 
@@ -1560,7 +1566,10 @@ def _get_financial_report(
         statuses.append(("no_data", source_name, None))
 
     source_names = [source_name for _, source_name, _ in statuses]
-    if statuses and all(status == "no_data" for status, _, _ in statuses):
+    saw_unavailable = any(status == "unavailable" for status, _, _ in statuses)
+    if statuses and not saw_unavailable and all(
+        status == "no_data" for status, _, _ in statuses
+    ):
         return (
             None,
             None,

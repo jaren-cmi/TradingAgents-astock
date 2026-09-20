@@ -204,13 +204,14 @@ def test_annual_statement_filter_requires_year_end():
         [
             {"报告日": "2025-12-15", "资产总计": 1},
             {"报告日": "2025-12-31", "资产总计": 2},
+            {"报告日": "2024-12-31", "资产总计": 4},
             {"报告日": "2026-03-31", "资产总计": 3},
         ]
     )
 
     out = a_stock._apply_financial_statement_filters(df, "annual", "2026-12-31")
 
-    assert out["报告日"].tolist() == ["2025-12-31"]
+    assert out["报告日"].tolist() == ["2025-12-31", "2024-12-31"]
 
 
 def test_lockup_empty_results_are_confirmed_no_data(monkeypatch):
