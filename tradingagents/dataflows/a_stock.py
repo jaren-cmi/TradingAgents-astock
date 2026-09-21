@@ -1584,6 +1584,12 @@ def _format_report_date_key(raw_value: str) -> str:
     return text.replace("/", "-")[:10]
 
 
+def _report_period_sort_key(raw_value: str):
+    normalized = _format_report_date_key(raw_value)
+    parsed = pd.to_datetime(normalized, errors="coerce")
+    return (0, parsed) if not pd.isna(parsed) else (1, normalized)
+
+
 def _sina_statement_rows_to_df(rows: list[dict]) -> pd.DataFrame:
     grouped: dict[str, dict[str, object]] = {}
     for item in rows:
@@ -1634,7 +1640,12 @@ def _parse_sina_financial_report_payload(
     report_list = data.get("report_list")
     if isinstance(report_list, dict) and report_list:
         rows = []
-        for period, obj in sorted(report_list.items(), reverse=True):
+        sorted_items = sorted(
+            report_list.items(),
+            key=lambda item: _report_period_sort_key(item[0]),
+            reverse=True,
+        )
+        for period, obj in sorted_items:
             items = (obj or {}).get("data") or []
             row = {"报告日": _format_report_date_key(period)}
             for item in items:

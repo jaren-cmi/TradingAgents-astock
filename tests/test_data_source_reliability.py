@@ -412,6 +412,33 @@ def test_sina_financial_parser_extracts_real_response_samples(
     assert normalized.loc[0, expected_column] == expected_value
 
 
+def test_sina_financial_parser_sorts_by_normalized_report_date():
+    payload = {
+        "result": {
+            "status": {"code": 0},
+            "data": {
+                "report_list": {
+                    "2026/06/30": {
+                        "data": [
+                            {"item_title": "资产总计", "item_value": "1000.0"},
+                        ]
+                    },
+                    "20260331": {
+                        "data": [
+                            {"item_title": "资产总计", "item_value": "900.0"},
+                        ]
+                    },
+                }
+            },
+        }
+    }
+
+    df = a_stock._parse_sina_financial_report_payload(payload, "fzb")
+
+    assert df["报告日"].tolist() == ["2026-06-30", "2026-03-31"]
+    assert df.loc[0, "资产总计"] == "1000.0"
+
+
 def test_eastmoney_financial_report_reaches_http_request_layer(monkeypatch):
     calls = {}
 
