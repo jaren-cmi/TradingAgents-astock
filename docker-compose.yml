@@ -1,12 +1,12 @@
 services:
+  # 如容器里出现 `Name or service not known` / `Failed to resolve`，请叠加
+  # `docker-compose.dns.yml`（显式 DNS 解析器覆盖），而不是直接改默认文件：
+  #   docker compose -f docker-compose.yml -f docker-compose.dns.yml up web
   # CLI（默认）：docker compose run --rm tradingagents
   tradingagents:
     build: .
     env_file:
       - .env
-    dns:
-      - 223.5.5.5
-      - 119.29.29.29
     volumes:
       - tradingagents_data:/home/appuser/.tradingagents
     tty: true
@@ -22,9 +22,6 @@ services:
     entrypoint: ["tradingagents-web"]
     env_file:
       - .env
-    dns:
-      - 223.5.5.5
-      - 119.29.29.29
     environment:
       # 容器内必须监听 0.0.0.0，否则端口映射进不来
       - STREAMLIT_SERVER_ADDRESS=0.0.0.0
@@ -46,9 +43,6 @@ services:
     build: .
     env_file:
       - .env
-    dns:
-      - 223.5.5.5
-      - 119.29.29.29
     environment:
       - LLM_PROVIDER=ollama
     volumes:
