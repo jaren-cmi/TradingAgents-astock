@@ -1,0 +1,38 @@
+{
+  "version": "3.0",
+  "result": {
+    "pages": 1,
+    "data": [
+      {
+        "SECUCODE": "688256.SH",
+        "SECURITY_CODE": "688256",
+        "SECURITY_NAME_ABBR": "寒武纪",
+        "REPORT_DATE": "2026-06-30 00:00:00",
+        "REPORT_DATE_NAME": "2026中报",
+        "NOTICE_DATE": "2026-08-08 00:00:00",
+        "CURRENCY": "CNY",
+        "TOTAL_REVENUE": 321.0,
+        "OPERATE_INCOME": 300.0,
+        "NETPROFIT": 18.0,
+        "PARENT_NETPROFIT": 15.0,
+        "OPERATE_COST": null,
+        "SELL_EXPENSE": null
+      },
+      {
+        "SECUCODE": "688256.SH",
+        "SECURITY_CODE": "688256",
+        "SECURITY_NAME_ABBR": "寒武纪",
+        "REPORT_DATE": "2026-03-31 00:00:00",
+        "REPORT_DATE_NAME": "2026一季报",
+        "NOTICE_DATE": "2026-04-29 00:00:00",
+        "CURRENCY": "CNY",
+        "TOTAL_REVENUE": 280.0,
+        "OPERATE_INCOME": 260.0,
+        "NETPROFIT": 10.0,
+        "PARENT_NETPROFIT": 8.0,
+        "OPERATE_COST": null,
+        "SELL_EXPENSE": null
+      }
+    ]
+  }
+}

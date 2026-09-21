@@ -37,7 +37,11 @@
 - **东财字段归一化回归**：字段归一化入口现已先规范化列标签（含空白 / MultiIndex），明确避免把 DataFrame 当 Series 去用 `.str` 访问器。新增回归测试会在 mock HTTP 下真正走到东财请求，再做归一化，防止以后再次出现“请求前就崩，但测试只测到纯 rename”。
 - **失败原因分类**：财报 fallback 与诊断脚本现在统一显式区分 `CODE_ERROR` / `PARSE_ERROR` / `DNS_ERROR` / `NETWORK_ERROR` / `NO_DATA`。重点是：HTTP 200 但本地解析失败会报 `PARSE_ERROR`，请求发出前的代码异常会报 `CODE_ERROR`，不会再伪装成“网络故障”。
 - **腾讯 DNS**：`Name or service not known` 现在被识别为 `DNS_ERROR`，并且不会走满重试；容器侧提供了**可选示例** `docker-compose.dns.example.yml`（`223.5.5.5` / `119.29.29.29`），用户需按实际 compose 服务名复制成自己的 override，避免把公共 DNS 强塞给所有默认部署。
-- **东财 `RPT_F10_FINANCE_GBALANCE` 验证状态**：本 sandbox 仍无法解析 `datacenter-web.eastmoney.com`，因此这里只能确认代码已真正发到 mock HTTP 层，**不能把 `GBALANCE` 已 live 验证 写成既成事实**。本条在当前环境下仍应视为 **未验证**，待可联网环境复测。
+- **东财 `RPT_F10_FINANCE_GBALANCE` 验证状态**：已在**可联网本机诊断脚本**里抓到完整 HTTP trace，确认
+  `https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_F10_FINANCE_GBALANCE&columns=ALL&filter=(SECUCODE="688256.SH")...`
+  对 `688256.SH` 返回 **HTTP 200**，且 `result.data[]` 含 `REPORT_DATE="2026-06-30 00:00:00"`、
+  `REPORT_TYPE="中报"`、`TOTAL_ASSETS` 等完整中报字段，因此该 reportName 现应记为
+  **已实测验证**。验证方式：运行诊断脚本并检查其记录的 datacenter HTTP trace / body snippet。
 
 ---
 

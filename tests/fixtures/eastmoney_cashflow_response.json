@@ -1,0 +1,38 @@
+{
+  "version": "3.0",
+  "result": {
+    "pages": 1,
+    "data": [
+      {
+        "SECUCODE": "688256.SH",
+        "SECURITY_CODE": "688256",
+        "SECURITY_NAME_ABBR": "寒武纪",
+        "REPORT_DATE": "2026-06-30 00:00:00",
+        "REPORT_DATE_NAME": "2026中报",
+        "NOTICE_DATE": "2026-08-08 00:00:00",
+        "CURRENCY": "CNY",
+        "NETCASH_OPERATE": 55.0,
+        "NETCASH_INVEST": -12.0,
+        "NETCASH_FINANCE": 20.0,
+        "CASH_EQU_END": 88.0,
+        "SALES_SERVICES": null,
+        "BUY_FIXED_ASSETS_OTHER": null
+      },
+      {
+        "SECUCODE": "688256.SH",
+        "SECURITY_CODE": "688256",
+        "SECURITY_NAME_ABBR": "寒武纪",
+        "REPORT_DATE": "2026-03-31 00:00:00",
+        "REPORT_DATE_NAME": "2026一季报",
+        "NOTICE_DATE": "2026-04-29 00:00:00",
+        "CURRENCY": "CNY",
+        "NETCASH_OPERATE": 40.0,
+        "NETCASH_INVEST": -10.0,
+        "NETCASH_FINANCE": 18.0,
+        "CASH_EQU_END": 70.0,
+        "SALES_SERVICES": null,
+        "BUY_FIXED_ASSETS_OTHER": null
+      }
+    ]
+  }
+}
