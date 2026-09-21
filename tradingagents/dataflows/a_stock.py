@@ -1618,10 +1618,12 @@ def _parse_sina_financial_report_payload(
     if not isinstance(result, dict):
         raise DataSourceParseError("Sina response missing result object")
     status = result.get("status")
-    if isinstance(status, dict) and str(status.get("code")) not in ("0", ""):
-        raise DataSourceParseError(
-            f"Sina API returned status code {status.get('code')!r}"
-        )
+    if isinstance(status, dict):
+        status_code = status.get("code")
+        if status_code not in (None, "") and str(status_code) != "0":
+            raise DataSourceParseError(
+                f"Sina API returned status code {status.get('code')!r}"
+            )
     data = result.get("data")
     if isinstance(data, list):
         df = _sina_statement_rows_to_df(data)
