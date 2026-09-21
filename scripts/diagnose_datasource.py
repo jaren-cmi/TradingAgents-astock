@@ -51,6 +51,14 @@ class RequestTrace:
     error: str | None = None
 
 
+@dataclass
+class ProbeResult:
+    ok: bool
+    category: str
+    detail: str
+    traces: list[RequestTrace]
+
+
 def _sensitive_values_from_env() -> list[str]:
     values = []
     for key, value in os.environ.items():
@@ -195,25 +203,24 @@ def _render_trace(trace: RequestTrace) -> str:
 
 def _render_fallback_result(
     source_name: str,
-    ok: bool,
-    detail: str,
-    traces: list[RequestTrace],
+    result: ProbeResult,
 ) -> str:
     lines = [
         f"## Fallback source: {source_name}",
-        f"status: {'OK' if ok else 'FAILED'}",
-        f"detail: {_redact_text(detail)}",
+        f"status: {'OK' if result.ok else 'FAILED'}",
+        f"category: {result.category}",
+        f"detail: {_redact_text(result.detail)}",
     ]
-    if traces:
+    if result.traces:
         lines.append("requests:")
-        lines.extend(_render_trace(trace) for trace in traces)
+        lines.extend(_render_trace(trace) for trace in result.traces)
     else:
         lines.append("requests: (no HTTP trace captured)")
     return "\n".join(lines)
 
 
 def _financial_source_probes(
-) -> list[tuple[str, Callable[..., tuple[bool, str, list[RequestTrace]]]]]:
+) -> list[tuple[str, Callable[..., ProbeResult]]]:
     return [
         ("新浪财经 direct HTTP", _probe_sina_financial),
         ("东方财富 datacenter", _probe_eastmoney_financial),
@@ -226,7 +233,7 @@ def _probe_sina_financial(
     report_type: str,
     freq: str,
     curr_date: str | None,
-) -> tuple[bool, str, list[RequestTrace]]:
+) -> ProbeResult:
     source_type = {
         "资产负债表": "fzb",
         "利润表": "lrb",
@@ -256,14 +263,37 @@ def _probe_sina_financial(
         headers=headers,
     )
     if exc:
-        return False, a_stock._exception_summary(exc), [trace]
+        return ProbeResult(
+            ok=False,
+            category=a_stock._classify_source_exception(exc),
+            detail=a_stock._exception_summary(exc),
+            traces=[trace],
+        )
     payload = response.json()
-    items = payload.get("result", {}).get("data", {}).get(source_type, [])
-    df = a_stock._normalize_financial_statement_df(pd.DataFrame(items), report_type)
-    df = a_stock._apply_financial_statement_filters(df, freq, curr_date)
+    try:
+        df = a_stock._parse_sina_financial_report_payload(payload, source_type)
+        df = a_stock._normalize_financial_statement_df(df, report_type)
+        df = a_stock._apply_financial_statement_filters(df, freq, curr_date)
+    except Exception as parse_exc:
+        return ProbeResult(
+            ok=False,
+            category=a_stock._classify_source_exception(parse_exc),
+            detail=a_stock._exception_summary(parse_exc),
+            traces=[trace],
+        )
     if df.empty:
-        return False, "empty dataframe", [trace]
-    return True, f"rows={len(df)}, columns={list(df.columns)}", [trace]
+        return ProbeResult(
+            ok=False,
+            category=a_stock.FAILURE_NO_DATA,
+            detail="empty dataframe after successful parse",
+            traces=[trace],
+        )
+    return ProbeResult(
+        ok=True,
+        category="OK",
+        detail=f"rows={len(df)}, columns={list(df.columns)}",
+        traces=[trace],
+    )
 
 
 def _probe_eastmoney_financial(
@@ -271,7 +301,7 @@ def _probe_eastmoney_financial(
     report_type: str,
     freq: str,
     curr_date: str | None,
-) -> tuple[bool, str, list[RequestTrace]]:
+) -> ProbeResult:
     url = a_stock._DATACENTER_URL
     params = a_stock._eastmoney_financial_report_params(code, report_type)
     trace, response, exc = _run_traced_request(
@@ -281,14 +311,48 @@ def _probe_eastmoney_financial(
         params=params,
     )
     if exc:
-        return False, a_stock._exception_summary(exc), [trace]
+        return ProbeResult(
+            ok=False,
+            category=a_stock._classify_source_exception(exc),
+            detail=a_stock._exception_summary(exc),
+            traces=[trace],
+        )
     payload = response.json()
-    items = payload.get("result", {}).get("data") or []
-    df = a_stock._normalize_financial_statement_df(pd.DataFrame(items), report_type)
-    df = a_stock._apply_financial_statement_filters(df, freq, curr_date)
+    try:
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            raise a_stock.DataSourceParseError(
+                "Eastmoney response missing result object"
+            )
+        items = result.get("data")
+        if items is None:
+            raise a_stock.DataSourceParseError(
+                "Eastmoney response missing result.data"
+            )
+        if not isinstance(items, list):
+            raise a_stock.DataSourceParseError("Eastmoney result.data is not a list")
+        df = a_stock._normalize_financial_statement_df(pd.DataFrame(items), report_type)
+        df = a_stock._apply_financial_statement_filters(df, freq, curr_date)
+    except Exception as parse_exc:
+        return ProbeResult(
+            ok=False,
+            category=a_stock._classify_source_exception(parse_exc),
+            detail=a_stock._exception_summary(parse_exc),
+            traces=[trace],
+        )
     if df.empty:
-        return False, "empty dataframe", [trace]
-    return True, f"rows={len(df)}, columns={list(df.columns)}", [trace]
+        return ProbeResult(
+            ok=False,
+            category=a_stock.FAILURE_NO_DATA,
+            detail="empty dataframe after successful parse",
+            traces=[trace],
+        )
+    return ProbeResult(
+        ok=True,
+        category="OK",
+        detail=f"rows={len(df)}, columns={list(df.columns)}",
+        traces=[trace],
+    )
 
 
 def _probe_tencent_financial(
@@ -296,7 +360,7 @@ def _probe_tencent_financial(
     report_type: str,
     freq: str,
     curr_date: str | None,
-) -> tuple[bool, str, list[RequestTrace]]:
+) -> ProbeResult:
     url_map = {
         "资产负债表": "zcfzb",
         "利润表": "lrfpb",
@@ -319,19 +383,26 @@ def _probe_tencent_financial(
         headers=headers,
     )
     if exc:
-        return False, a_stock._exception_summary(exc), [trace]
-    tables = pd.read_html(StringIO(response.text))
+        return ProbeResult(
+            ok=False,
+            category=a_stock._classify_source_exception(exc),
+            detail=a_stock._exception_summary(exc),
+            traces=[trace],
+        )
+    try:
+        tables = pd.read_html(StringIO(response.text))
+    except ValueError as parse_exc:
+        return ProbeResult(
+            ok=False,
+            category=a_stock.FAILURE_PARSE_ERROR,
+            detail=a_stock._exception_summary(parse_exc),
+            traces=[trace],
+        )
     for table in tables:
         if table is None or table.empty:
             continue
         work = table.copy()
-        if isinstance(work.columns, pd.MultiIndex):
-            work.columns = [
-                " ".join(str(part).strip() for part in col if str(part).strip())
-                for col in work.columns
-            ]
-        else:
-            work.columns = [str(col).strip() for col in work.columns]
+        work.columns = a_stock._normalize_financial_columns(work.columns)
         if len(work.columns) < 2:
             continue
         if not any(
@@ -342,8 +413,18 @@ def _probe_tencent_financial(
         work = a_stock._normalize_financial_statement_df(work, report_type)
         filtered = a_stock._apply_financial_statement_filters(work, freq, curr_date)
         if not filtered.empty:
-            return True, f"rows={len(filtered)}, columns={list(filtered.columns)}", [trace]
-    return False, "table layout unrecognized or empty dataframe", [trace]
+            return ProbeResult(
+                ok=True,
+                category="OK",
+                detail=f"rows={len(filtered)}, columns={list(filtered.columns)}",
+                traces=[trace],
+            )
+    return ProbeResult(
+        ok=False,
+        category=a_stock.FAILURE_PARSE_ERROR,
+        detail="table layout unrecognized or empty dataframe",
+        traces=[trace],
+    )
 
 
 def _probe_industry_comparison(
@@ -394,11 +475,16 @@ def diagnose_financial_api(
 
     for source_name, fetcher in _financial_source_probes():
         try:
-            ok, detail, traces = fetcher(code, report_type, freq, curr_date)
+            result = fetcher(code, report_type, freq, curr_date)
         except Exception as exc:
-            ok, detail, traces = False, a_stock._exception_summary(exc), []
+            result = ProbeResult(
+                ok=False,
+                category=a_stock._classify_source_exception(exc),
+                detail=a_stock._exception_summary(exc),
+                traces=[],
+            )
         lines.append("")
-        lines.append(_render_fallback_result(source_name, ok, detail, traces))
+        lines.append(_render_fallback_result(source_name, result))
 
     with quiet_dataflow_logger():
         final_text = getattr(a_stock, api_name)(code, freq, curr_date)

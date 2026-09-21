@@ -1,0 +1,57 @@
+{
+  "result": {
+    "status": {
+      "code": 0,
+      "msg": "ok"
+    },
+    "data": {
+      "report_count": "2",
+      "report_date": [
+        {
+          "date_value": "20260630",
+          "date_description": "2026半年报",
+          "date_type": 2
+        },
+        {
+          "date_value": "20260331",
+          "date_description": "2026一季报",
+          "date_type": 1
+        }
+      ],
+      "report_list": {
+        "20260630": {
+          "data": [
+            {
+              "item_title": "营业总收入",
+              "item_value": "210.0",
+              "item_source": "lrb",
+              "item_tongbi": "21.5%"
+            },
+            {
+              "item_title": "净利润",
+              "item_value": "31.0",
+              "item_source": "lrb",
+              "item_tongbi": "16.0%"
+            }
+          ]
+        },
+        "20260331": {
+          "data": [
+            {
+              "item_title": "营业总收入",
+              "item_value": "92.0",
+              "item_source": "lrb",
+              "item_tongbi": "18.2%"
+            },
+            {
+              "item_title": "净利润",
+              "item_value": "14.0",
+              "item_source": "lrb",
+              "item_tongbi": "11.0%"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

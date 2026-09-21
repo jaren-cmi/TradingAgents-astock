@@ -1,4 +1,8 @@
 services:
+  # 如容器里出现 `Name or service not known` / `Failed to resolve`，请叠加
+  # `docker-compose.dns.example.yml`（显式 DNS 解析器覆盖示例），按你的服务名复制/改名后再叠加：
+  #   cp docker-compose.dns.example.yml docker-compose.dns.yml
+  #   docker compose -f docker-compose.yml -f docker-compose.dns.yml up web
   # CLI（默认）：docker compose run --rm tradingagents
   tradingagents:
     build: .
