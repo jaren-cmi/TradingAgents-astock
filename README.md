@@ -444,16 +444,15 @@ python scripts/diagnose_datasource.py --ticker 688256 --all --curr-date 2026-09-
 - push2 / datacenter 是否发生远程断连、HTTP 4xx/5xx、DNS 解析失败或本地解析 bug
 - 到底是 `CODE_ERROR` / `PARSE_ERROR` / `DNS_ERROR` / `NETWORK_ERROR` / `NO_DATA` 中的哪一类
 
-如果输出里出现 `Name or service not known` / `Failed to resolve`，优先检查 **容器 DNS**，不是先怀疑数据源本身。仓库提供了一个**可选**的 `docker-compose.dns.yml` 覆盖文件（`223.5.5.5` / `119.29.29.29`）：
+如果输出里出现 `Name or service not known` / `Failed to resolve`，优先检查 **容器 DNS**，不是先怀疑数据源本身。仓库提供了一个**可选示例** `docker-compose.dns.example.yml`（`223.5.5.5` / `119.29.29.29`），先复制成你自己的 override，再按实际服务名补全：
 
 ```bash
+cp docker-compose.dns.example.yml docker-compose.dns.yml
 docker compose -f docker-compose.yml -f docker-compose.dns.yml up web
 docker compose -f docker-compose.yml -f docker-compose.dns.yml run --rm tradingagents
 ```
 
-这样不会强行改掉所有部署的默认 DNS；若你用的是自定义 compose / k8s / 企业内网 resolver，请改成你自己的可达 DNS。DNS 不通时现在会快速失败并标成 `DNS_ERROR`，不会再白白重试多轮。
-
-如果你在用 `tradingagents-ollama` 之类的自定义 profile，也请在你自己的 override 里给对应服务补同样的 `dns:` 段。
+这样不会强行改掉所有部署的默认 DNS；若你用的是自定义 compose / k8s / 企业内网 resolver，请改成你自己的可达 DNS。示例文件只覆盖仓库里最常见的 `tradingagents` / `web` 服务；如果你在用 `tradingagents-ollama` 或其它 profile/自定义服务，请在你自己的 override 里给对应服务补同样的 `dns:` 段。DNS 不通时现在会快速失败并标成 `DNS_ERROR`，不会再白白重试多轮。
 
 **Q: 为什么没有 `[google]` extra 了？装 Gemini 报 httpx 冲突怎么办？**
 **v0.3.1 起移除了 `[google]` extra**（[#87](https://github.com/simonlin1212/TradingAgents-astock/issues/87)）。原因：`langchain-google-genai>=4.0.0` 要求 `google-genai>=1.53.0`，而该区间内**每一个** google-genai 版本都要求 `httpx>=0.28.1`；mootdx（核心 A 股数据源）钉死 `httpx>=0.25,<0.26`。**没有任何版本组合能同时满足，冲突是结构性的。**
