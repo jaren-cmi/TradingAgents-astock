@@ -8,8 +8,3 @@ services:
     dns:
       - 223.5.5.5
       - 119.29.29.29
-
-  tradingagents-ollama:
-    dns:
-      - 223.5.5.5
-      - 119.29.29.29
