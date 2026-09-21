@@ -431,6 +431,19 @@ v0.2.12 起 Dockerfile 已内置 `fonts-noto-cjk`，重新 `docker build` 即可
 **Q: 部分分析师报告（情绪/新闻/基本面/政策/游资/解禁）空白不显示？**
 这些报告由对应 Analyst 调用数据工具后生成，**空报告会被自动跳过不显示**。数据源本身是健康的（腾讯/mootdx/同花顺/东财实测出数）；报告为空通常是**所选模型 tool-call 能力弱**（如部分 deepseek/minimax 轻量模型不稳定地调用工具）。建议换用 tool-call 更稳的模型（deepseek-chat / 通义 / GLM-4 / Claude / GPT 等），或重试。
 
+**Q: 某个数据接口到底是哪个 fallback 源失败了？能看原始请求吗？**
+可以。v0.5.18 起提供了独立诊断脚本：
+
+```bash
+python scripts/diagnose_datasource.py --ticker 688256 --api get_balance_sheet --curr-date 2026-09-20
+python scripts/diagnose_datasource.py --ticker 688256 --all --curr-date 2026-09-20
+```
+
+输出会列出每个 fallback 源的成功/失败状态，以及实际请求 URL、参数、HTTP 状态码、耗时和原始响应体片段（自动截断并对环境变量里的 key/token 做脱敏）。适合排查：
+- 东财 `reportName` / `SECUCODE` 是否写对
+- push2 / datacenter 是否发生远程断连、HTTP 4xx/5xx 或空结果
+- 到底是「技术故障」还是「确认无数据」
+
 **Q: 为什么没有 `[google]` extra 了？装 Gemini 报 httpx 冲突怎么办？**
 **v0.3.1 起移除了 `[google]` extra**（[#87](https://github.com/simonlin1212/TradingAgents-astock/issues/87)）。原因：`langchain-google-genai>=4.0.0` 要求 `google-genai>=1.53.0`，而该区间内**每一个** google-genai 版本都要求 `httpx>=0.28.1`；mootdx（核心 A 股数据源）钉死 `httpx>=0.25,<0.26`。**没有任何版本组合能同时满足，冲突是结构性的。**
 
@@ -577,4 +590,3 @@ config["agent_sdk_quick_model"] = "sonnet"    # 分析师节点
 #### 依赖说明
 
 `[agentsdk]` 的依赖链是 `claude-agent-sdk → mcp → httpx2`，**不碰 httpx**，与 mootdx 的 `httpx<0.26` 无冲突（已 `uv lock` 实测）——和 #87 里被移除的 `[google]` 情况不同，不需要单开 venv。
-

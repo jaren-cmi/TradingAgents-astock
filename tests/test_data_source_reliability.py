@@ -1,7 +1,9 @@
 import pandas as pd
 import pytest
 import requests
+from http.client import RemoteDisconnected
 
+from scripts import diagnose_datasource
 from tradingagents.agents.quality_gate import _hard_check_report
 from tradingagents.dataflows import a_stock
 
@@ -54,6 +56,34 @@ def test_request_with_retry_does_not_retry_404(monkeypatch):
 
     assert attempts["count"] == 1
     assert delays == []
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: RemoteDisconnected("peer closed"),
+        lambda: requests.exceptions.ChunkedEncodingError("chunk broken"),
+    ],
+)
+def test_request_with_retry_retries_remote_disconnect_variants(monkeypatch, factory):
+    attempts = {"count": 0}
+    delays = []
+
+    class _Resp:
+        status_code = 200
+
+    def flaky():
+        attempts["count"] += 1
+        if attempts["count"] < 3:
+            raise factory()
+        return _Resp()
+
+    monkeypatch.setattr(a_stock.time, "sleep", delays.append)
+    resp = a_stock._request_with_retry(flaky, "test source")
+
+    assert attempts["count"] == 3
+    assert delays == [0.5, 1.0]
+    assert resp.status_code == 200
 
 
 def test_financial_report_falls_back_to_eastmoney(monkeypatch):
@@ -212,6 +242,90 @@ def test_annual_statement_filter_requires_year_end():
     out = a_stock._apply_financial_statement_filters(df, "annual", "2026-12-31")
 
     assert out["报告日"].tolist() == ["2025-12-31", "2024-12-31"]
+
+
+@pytest.mark.parametrize(
+    ("report_type", "expected_report_name"),
+    [
+        ("资产负债表", "RPT_F10_FINANCE_GBALANCE"),
+        ("利润表", "RPT_F10_FINANCE_GINCOME"),
+        ("现金流量表", "RPT_F10_FINANCE_GCASHFLOW"),
+    ],
+)
+def test_eastmoney_financial_report_params_use_verified_report_names(
+    report_type, expected_report_name
+):
+    params_688 = a_stock._eastmoney_financial_report_params("688256", report_type)
+    params_600 = a_stock._eastmoney_financial_report_params("600519", report_type)
+
+    assert params_688["reportName"] == expected_report_name
+    assert params_600["reportName"] == expected_report_name
+    assert params_688["filter"] == '(SECUCODE="688256.SH")'
+    assert params_600["filter"] == '(SECUCODE="600519.SH")'
+
+
+@pytest.mark.parametrize(
+    ("report_type", "sina_row", "eastmoney_row", "expected_columns"),
+    [
+        (
+            "资产负债表",
+            {"报告日": "2026-06-30", "资产总计": 10, "负债合计": 4},
+            {"REPORT_DATE": "2026-06-30", "TOTAL_ASSETS": 10, "TOTAL_LIABILITIES": 4},
+            ["报告日", "资产总计", "负债合计"],
+        ),
+        (
+            "现金流量表",
+            {"报告日": "2026-06-30", "经营活动产生的现金流量净额": 3, "筹资活动产生的现金流量净额": 2},
+            {"REPORT_DATE": "2026-06-30", "NETCASH_OPERATE": 3, "NETCASH_FINANCE": 2},
+            ["报告日", "经营活动产生的现金流量净额", "筹资活动产生的现金流量净额"],
+        ),
+    ],
+)
+def test_financial_statement_normalization_aligns_sina_and_eastmoney_fields(
+    report_type, sina_row, eastmoney_row, expected_columns
+):
+    sina = a_stock._normalize_financial_statement_df(pd.DataFrame([sina_row]), report_type)
+    eastmoney = a_stock._normalize_financial_statement_df(
+        pd.DataFrame([eastmoney_row]), report_type
+    )
+
+    assert expected_columns == [col for col in expected_columns if col in sina.columns]
+    assert expected_columns == [col for col in expected_columns if col in eastmoney.columns]
+    assert sina.loc[0, expected_columns].to_dict() == eastmoney.loc[0, expected_columns].to_dict()
+
+
+def test_diagnosis_report_redacts_env_secrets(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret-value")
+
+    rendered = diagnose_datasource.render_diagnosis_report(
+        [
+            "request url contains sk-secret-value",
+            diagnose_datasource._safe_json({"Authorization": "******"}),
+        ]
+    )
+
+    assert "sk-secret-value" not in rendered
+    assert "***REDACTED***" in rendered
+
+
+def test_diagnosis_report_redacts_inline_secret_fields():
+    rendered = diagnose_datasource.render_diagnosis_report(
+        [
+            "Authorization: inline-secret",
+            "https://example.com/path?token=inline-token&ok=1",
+        ]
+    )
+
+    assert "inline-secret" not in rendered
+    assert "inline-token" not in rendered
+    assert rendered.count("***REDACTED***") >= 2
+
+
+def test_diagnosis_parse_args_rejects_api_and_all():
+    with pytest.raises(SystemExit):
+        diagnose_datasource.parse_args(
+            ["--ticker", "688256", "--api", "get_balance_sheet", "--all"]
+        )
 
 
 def test_lockup_empty_results_are_confirmed_no_data(monkeypatch):

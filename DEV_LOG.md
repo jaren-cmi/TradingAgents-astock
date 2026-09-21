@@ -41,6 +41,37 @@
 - `get_profit_forecast` 另补了一份同花顺 `worth.html` 样式样本测试，确认在拿到完整表格时不再误报格式错误；
   后续若在可联网环境复测 688256，优先看真实返回是否命中该解析路径。
 
+### 2026-09-20 财报 fallback / 诊断脚本补强（issue: 688256 资产负债表 + 行业横向对比）
+
+- **东财资产负债表 query 形状修正**：代码从 `RPT_F10_FINANCE_BALANCE` +
+  `SECURITY_CODE="688256"` 改为 `RPT_F10_FINANCE_GBALANCE` +
+  `SECUCODE="688256.SH"`（`600519` 同理是 `600519.SH`）。原因：
+  - 用户在线实测里 `RPT_F10_FINANCE_GINCOME` / `RPT_F10_FINANCE_GCASHFLOW`
+    可返回 688256 数据，唯独 balance 通道失败；
+  - 外部 A 股财报工具测试明确断言 **A 股 balance 用 `GBALANCE` 且 filter 必须是
+    dotted `SECUCODE`，不是 bare `SECURITY_CODE`**；
+  - 当前 sandbox 对 `datacenter-web.eastmoney.com` 是 DNS 失败，因此这里无法在 shell
+    里继续把 `GBALANCE` / `BALANCE` 逐个打到东财实端点做最终 endpoint-level 结论，
+    但已把试过的名字全部记录：`RPT_F10_FINANCE_BALANCE` / `RPT_F10_FINANCE_GBALANCE` /
+    `RPT_F10_FINANCE_GINCOME` / `RPT_F10_FINANCE_GCASHFLOW` /
+    `RPT_F10_FINANCE_INCOME` / `RPT_F10_FINANCE_CASHFLOW`。这些请求在当前环境都止于
+    `NameResolutionError`，所以不能把“DNS 失败”误写成“某个 reportName 不存在”。
+- **字段名归一化**：新浪/东财 fallback 统一先做字段别名映射，再进入 DataFrame 过滤。
+  当前先覆盖最常用且最容易引发语义漂移的字段：`REPORT_DATE -> 报告日`、
+  `TOTAL_ASSETS -> 资产总计`、`TOTAL_LIABILITIES -> 负债合计`、`TOTAL_REVENUE -> 营业总收入`、
+  `NETPROFIT -> 净利润`、`NETCASH_OPERATE/NETCASH_FINANCE -> 经营/筹资现金流净额` 等。
+  目的不是“翻译漂亮”，而是保证 fallback 切源后 LLM 读到的是**同一语义列**。
+- **远程断连类异常纳入重试**：`RemoteDisconnected` / `ChunkedEncodingError` /
+  `ConnectionResetError` 现在与 `Timeout` / `ConnectionError` 一样进入指数退避重试；
+  `HTTP 404` 仍坚持**不重试**，避免把参数错误或真实 4xx 当网络抖动硬打。
+- **行业横向对比**：该调用本来已经走 `_em_get()`；本次额外补了 boardlist referer，并靠
+  上述断连重试覆盖 push2 的 `remote end closed connection` / chunk 中断类故障。
+  这里刻意**没有**靠暴力加大重试次数硬刚东财，以免放大封 IP 风险。
+- **新增诊断脚本**：`python scripts/diagnose_datasource.py --ticker 688256 --api get_balance_sheet`
+  或 `--all` 会打印每个 fallback 源的成功/失败、实际 URL/参数、HTTP 状态、耗时和原始
+  响应片段（自动脱敏环境变量里的 key/token）。以后再遇到“技术故障”时，不用只能看报告里
+  一句总结，先让脚本把哪一路失败、失败到哪一步说清楚。
+
 ---
 
 ## 决策与选型记录
