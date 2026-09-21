@@ -442,7 +442,7 @@ def test_sina_financial_parser_sorts_by_normalized_report_date():
 def test_sina_statement_rows_to_df_sorts_mixed_report_date_formats():
     df = a_stock._sina_statement_rows_to_df(
         [
-            {"report_date": "20260331", "item_title": "资产总计", "item_value": "900.0"},
+            {"date_value": "20260331", "item_title": "资产总计", "item_value": "900.0"},
             {"report_date": "2026/06/30", "item_title": "资产总计", "item_value": "1000.0"},
         ]
     )

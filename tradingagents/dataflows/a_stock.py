@@ -1598,6 +1598,8 @@ def _sina_statement_rows_to_df(rows: list[dict]) -> pd.DataFrame:
         period = (
             item.get("report_date")
             or item.get("报告日")
+            or item.get("date_value")
+            or item.get("date")
             or item.get("item_time")
         )
         title = str(item.get("item_title") or item.get("item") or "").strip()
