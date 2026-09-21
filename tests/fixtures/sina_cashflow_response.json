@@ -1,0 +1,57 @@
+{
+  "result": {
+    "status": {
+      "code": 0,
+      "msg": "ok"
+    },
+    "data": {
+      "report_count": "2",
+      "report_date": [
+        {
+          "date_value": "20260630",
+          "date_description": "2026半年报",
+          "date_type": 2
+        },
+        {
+          "date_value": "20260331",
+          "date_description": "2026一季报",
+          "date_type": 1
+        }
+      ],
+      "report_list": {
+        "20260630": {
+          "data": [
+            {
+              "item_title": "经营活动产生的现金流量净额",
+              "item_value": "55.0",
+              "item_source": "llb",
+              "item_tongbi": "13.0%"
+            },
+            {
+              "item_title": "筹资活动产生的现金流量净额",
+              "item_value": "-18.0",
+              "item_source": "llb",
+              "item_tongbi": "-4.0%"
+            }
+          ]
+        },
+        "20260331": {
+          "data": [
+            {
+              "item_title": "经营活动产生的现金流量净额",
+              "item_value": "24.0",
+              "item_source": "llb",
+              "item_tongbi": "10.0%"
+            },
+            {
+              "item_title": "筹资活动产生的现金流量净额",
+              "item_value": "-9.0",
+              "item_source": "llb",
+              "item_tongbi": "-2.5%"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

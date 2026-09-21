@@ -31,6 +31,16 @@
 
 ---
 
+## 2026-09-21 财报 fallback 分类修正（issue: PR #8 诊断脚本暴露的三类故障）
+
+- **新浪财报解析结论**：当前 sandbox 里 `quotes.sina.cn` 仍是 DNS 失败，无法在本机直接抓 live JSON；但对同一接口的外部开源实现（akshare / Vibe-Research / Powershell_Finance）逐份交叉核对后，确认真实可解析结构是 `result.data.report_list[报告期].data[]`，而不是 PR #8 误写的 `result.data[source_type]`。本次已把解析切到 `report_list` 主路径，并保留长表兜底；测试夹具用的也是这个真实响应形状（含 `report_count` / `report_date` / `report_list`）。
+- **东财字段归一化回归**：字段归一化入口现已先规范化列标签（含空白 / MultiIndex），明确避免把 DataFrame 当 Series 去用 `.str` 访问器。新增回归测试会在 mock HTTP 下真正走到东财请求，再做归一化，防止以后再次出现“请求前就崩，但测试只测到纯 rename”。
+- **失败原因分类**：财报 fallback 与诊断脚本现在统一显式区分 `CODE_ERROR` / `PARSE_ERROR` / `DNS_ERROR` / `NETWORK_ERROR` / `NO_DATA`。重点是：HTTP 200 但本地解析失败会报 `PARSE_ERROR`，请求发出前的代码异常会报 `CODE_ERROR`，不会再伪装成“网络故障”。
+- **腾讯 DNS**：`Name or service not known` 现在被识别为 `DNS_ERROR`，并且不会走满重试；容器侧同时在 `docker-compose.yml` 给应用服务补了显式 DNS（`223.5.5.5` / `119.29.29.29`）。
+- **东财 `RPT_F10_FINANCE_GBALANCE` 验证状态**：本 sandbox 仍无法解析 `datacenter-web.eastmoney.com`，因此这里只能确认代码已真正发到 mock HTTP 层，**不能把 `GBALANCE` 已 live 验证 写成既成事实**。本条在当前环境下仍应视为 **未验证**，待可联网环境复测。
+
+---
+
 ## 2026-09-20 数据缺失专项核查（688256 寒武纪）
 
 - 在当前 sandbox 内对 `688256` 实测 `get_balance_sheet` / `get_cashflow` / `get_income_statement` /

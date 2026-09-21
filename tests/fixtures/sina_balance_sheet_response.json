@@ -1,0 +1,57 @@
+{
+  "result": {
+    "status": {
+      "code": 0,
+      "msg": "ok"
+    },
+    "data": {
+      "report_count": "2",
+      "report_date": [
+        {
+          "date_value": "20260630",
+          "date_description": "2026半年报",
+          "date_type": 2
+        },
+        {
+          "date_value": "20260331",
+          "date_description": "2026一季报",
+          "date_type": 1
+        }
+      ],
+      "report_list": {
+        "20260630": {
+          "data": [
+            {
+              "item_title": "资产总计",
+              "item_value": "1000.0",
+              "item_source": "fzb",
+              "item_tongbi": "12.0%"
+            },
+            {
+              "item_title": "负债合计",
+              "item_value": "410.0",
+              "item_source": "fzb",
+              "item_tongbi": "8.5%"
+            }
+          ]
+        },
+        "20260331": {
+          "data": [
+            {
+              "item_title": "资产总计",
+              "item_value": "950.0",
+              "item_source": "fzb",
+              "item_tongbi": "9.0%"
+            },
+            {
+              "item_title": "负债合计",
+              "item_value": "395.0",
+              "item_source": "fzb",
+              "item_tongbi": "7.2%"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

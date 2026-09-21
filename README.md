@@ -441,8 +441,10 @@ python scripts/diagnose_datasource.py --ticker 688256 --all --curr-date 2026-09-
 
 输出会列出每个 fallback 源的成功/失败状态，以及实际请求 URL、参数、HTTP 状态码、耗时和原始响应体片段（自动截断并对环境变量里的 key/token 做脱敏）。适合排查：
 - 东财 `reportName` / `SECUCODE` 是否写对
-- push2 / datacenter 是否发生远程断连、HTTP 4xx/5xx 或空结果
-- 到底是「技术故障」还是「确认无数据」
+- push2 / datacenter 是否发生远程断连、HTTP 4xx/5xx、DNS 解析失败或本地解析 bug
+- 到底是 `CODE_ERROR` / `PARSE_ERROR` / `DNS_ERROR` / `NETWORK_ERROR` / `NO_DATA` 中的哪一类
+
+如果输出里出现 `Name or service not known` / `Failed to resolve`，优先检查 **容器 DNS**，不是先怀疑数据源本身。仓库自带的 `docker-compose.yml` 已给 `tradingagents` / `web` / `tradingagents-ollama` 显式配置国内公共 DNS（`223.5.5.5` / `119.29.29.29`）；若你用的是自定义 compose 或 k8s 部署，请同步带上等效 resolver。DNS 不通时现在会快速失败并标成 `DNS_ERROR`，不会再白白重试多轮。
 
 **Q: 为什么没有 `[google]` extra 了？装 Gemini 报 httpx 冲突怎么办？**
 **v0.3.1 起移除了 `[google]` extra**（[#87](https://github.com/simonlin1212/TradingAgents-astock/issues/87)）。原因：`langchain-google-genai>=4.0.0` 要求 `google-genai>=1.53.0`，而该区间内**每一个** google-genai 版本都要求 `httpx>=0.28.1`；mootdx（核心 A 股数据源）钉死 `httpx>=0.25,<0.26`。**没有任何版本组合能同时满足，冲突是结构性的。**

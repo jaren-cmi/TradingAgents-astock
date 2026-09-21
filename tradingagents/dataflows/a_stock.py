@@ -15,6 +15,7 @@ Data sources:
 from __future__ import annotations
 
 from typing import Annotated
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from dateutil.relativedelta import relativedelta
 import contextlib
@@ -39,6 +40,25 @@ from .utils import safe_ticker_component
 logger = logging.getLogger(__name__)
 
 
+FAILURE_CODE_ERROR = "CODE_ERROR"
+FAILURE_PARSE_ERROR = "PARSE_ERROR"
+FAILURE_DNS_ERROR = "DNS_ERROR"
+FAILURE_NETWORK_ERROR = "NETWORK_ERROR"
+FAILURE_NO_DATA = "NO_DATA"
+
+
+class DataSourceParseError(RuntimeError):
+    """HTTP succeeded, but the local parser could not extract usable data."""
+
+
+@dataclass(frozen=True)
+class SourceFailure:
+    status: str
+    source_name: str
+    category: str
+    detail: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # Helpers: retries & standardized failure markers
 # ---------------------------------------------------------------------------
@@ -53,8 +73,62 @@ def _exception_summary(exc: Exception) -> str:
     return f"{type(exc).__name__}: {text}" if text else type(exc).__name__
 
 
+def _iter_exception_chain(exc: Exception):
+    """Yield an exception together with its causal/context chain."""
+    current = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = getattr(current, "__cause__", None) or getattr(
+            current, "__context__", None
+        )
+
+
+def _is_dns_resolution_error(exc: Exception) -> bool:
+    """Best-effort detection of DNS resolution failures wrapped by requests."""
+    dns_markers = (
+        "NameResolutionError",
+        "Failed to resolve",
+        "Name or service not known",
+        "No address associated with hostname",
+        "Temporary failure in name resolution",
+        "nodename nor servname provided",
+    )
+    for chained in _iter_exception_chain(exc):
+        if isinstance(chained, socket.gaierror):
+            return True
+        text = _exception_summary(chained)
+        if any(marker in text for marker in dns_markers):
+            return True
+    return False
+
+
+def _classify_source_exception(exc: Exception) -> str:
+    """Classify a source failure so reports don't hide local bugs as outages."""
+    if isinstance(exc, DataSourceParseError):
+        return FAILURE_PARSE_ERROR
+    if _is_dns_resolution_error(exc):
+        return FAILURE_DNS_ERROR
+    if isinstance(
+        exc,
+        (
+            _requests.exceptions.Timeout,
+            _requests.exceptions.ConnectionError,
+            _requests.exceptions.ChunkedEncodingError,
+            _requests.exceptions.HTTPError,
+            RemoteDisconnected,
+            ConnectionResetError,
+        ),
+    ):
+        return FAILURE_NETWORK_ERROR
+    return FAILURE_CODE_ERROR
+
+
 def _is_retryable_http_error(exc: Exception) -> bool:
     """Retry only transient network errors and HTTP 5xx responses."""
+    if _is_dns_resolution_error(exc):
+        return False
     if isinstance(
         exc,
         (
@@ -134,9 +208,15 @@ def _format_source_unavailable(
     subject: str,
     sources: list[str],
     last_error: str | None = None,
+    failures: list[SourceFailure] | None = None,
 ) -> str:
     joined = "/".join(sources)
     msg = f"[数据源不可用] {subject}：已尝试 {joined}，均未返回可用数据"
+    if failures:
+        summary = "；".join(
+            f"{item.source_name}={item.category}" for item in failures
+        )
+        msg += f"（失败分类：{summary}）"
     if last_error:
         msg += f"（最后错误：{last_error}）"
     msg += "。这是技术故障，不代表该公司没有披露相关数据。"
@@ -1382,13 +1462,7 @@ def _filter_financial_report_columns_by_header(
         return pd.DataFrame()
 
     work = df.copy()
-    if isinstance(work.columns, pd.MultiIndex):
-        work.columns = [
-            " ".join(str(part).strip() for part in col if str(part).strip())
-            for col in work.columns
-        ]
-    else:
-        work.columns = [str(col).strip() for col in work.columns]
+    work.columns = _normalize_financial_columns(work.columns)
 
     if len(work.columns) < 2:
         return pd.DataFrame()
@@ -1469,6 +1543,16 @@ _FINANCIAL_FIELD_ALIASES = {
 }
 
 
+def _normalize_financial_columns(columns) -> list[str]:
+    """Normalize statement column labels without assuming a Series `.str` accessor."""
+    if isinstance(columns, pd.MultiIndex):
+        return [
+            " ".join(str(part).strip() for part in col if str(part).strip())
+            for col in columns
+        ]
+    return [str(col).strip() for col in columns]
+
+
 def _normalize_financial_statement_df(
     df: pd.DataFrame,
     report_type: str,
@@ -1477,6 +1561,7 @@ def _normalize_financial_statement_df(
     if df is None or df.empty:
         return pd.DataFrame()
     work = df.copy()
+    work.columns = _normalize_financial_columns(work.columns)
     aliases = {
         **_FINANCIAL_COMMON_ALIASES,
         **_FINANCIAL_FIELD_ALIASES.get(report_type, {}),
@@ -1488,6 +1573,91 @@ def _normalize_financial_statement_df(
     if renamed:
         work = work.rename(columns=renamed)
     return work
+
+
+def _format_report_date_key(raw_value: str) -> str:
+    """Convert 20260630-like report keys to ISO dates for stable filtering."""
+    text = str(raw_value).strip()
+    match = _re.fullmatch(r"(\d{4})(\d{2})(\d{2})", text)
+    if match:
+        return f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
+    return text.replace("/", "-")[:10]
+
+
+def _sina_statement_rows_to_df(rows: list[dict]) -> pd.DataFrame:
+    grouped: dict[str, dict[str, object]] = {}
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        period = (
+            item.get("report_date")
+            or item.get("报告日")
+            or item.get("item_time")
+        )
+        title = str(item.get("item_title") or item.get("item") or "").strip()
+        value = item.get("item_value")
+        if not period or not title or value in (None, ""):
+            continue
+        report_date = _format_report_date_key(period)
+        row = grouped.setdefault(report_date, {"报告日": report_date})
+        row[title] = value
+        yoy = item.get("item_tongbi")
+        if yoy not in (None, ""):
+            row[f"{title}_同比"] = yoy
+    return pd.DataFrame(
+        [grouped[key] for key in sorted(grouped.keys(), reverse=True)]
+    )
+
+
+def _parse_sina_financial_report_payload(
+    payload: dict,
+    report_type: str,
+) -> pd.DataFrame:
+    """Parse the real Sina report payload shape into one row per report period."""
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        raise DataSourceParseError("Sina response missing result object")
+    status = result.get("status")
+    if isinstance(status, dict) and str(status.get("code")) not in ("0", ""):
+        raise DataSourceParseError(
+            f"Sina API returned status code {status.get('code')!r}"
+        )
+    data = result.get("data")
+    if isinstance(data, list):
+        df = _sina_statement_rows_to_df(data)
+        if not df.empty:
+            return df
+    if not isinstance(data, dict):
+        raise DataSourceParseError("Sina response missing data object")
+    report_list = data.get("report_list")
+    if isinstance(report_list, dict) and report_list:
+        rows = []
+        for period, obj in sorted(report_list.items(), reverse=True):
+            items = (obj or {}).get("data") or []
+            row = {"报告日": _format_report_date_key(period)}
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                title = str(item.get("item_title") or item.get("item") or "").strip()
+                value = item.get("item_value")
+                if not title or value in (None, ""):
+                    continue
+                row[title] = value
+                yoy = item.get("item_tongbi")
+                if yoy not in (None, ""):
+                    row[f"{title}_同比"] = yoy
+            if len(row) > 1:
+                rows.append(row)
+        df = pd.DataFrame(rows)
+        if not df.empty:
+            return df
+    fallback_df = _sina_statement_rows_to_df(data.get(report_type, []) or [])
+    if not fallback_df.empty:
+        return fallback_df
+    keys = sorted(data.keys())
+    raise DataSourceParseError(
+        f"Sina response contained no parsable statement rows; data keys={keys}"
+    )
 
 
 def _eastmoney_financial_report_params(code: str, report_type: str) -> dict[str, str]:
@@ -1550,13 +1720,8 @@ def _get_financial_report_sina(
         source_name=f"Sina {report_type} {code}",
     )
     d = r.json()
-
-    result = d.get("result", {}).get("data", {})
-    items = result.get(source_type, [])
-    if not isinstance(items, list) or not items:
-        return pd.DataFrame()
-
-    df = _normalize_financial_statement_df(pd.DataFrame(items), report_type)
+    df = _parse_sina_financial_report_payload(d, source_type)
+    df = _normalize_financial_statement_df(df, report_type)
     return _apply_financial_statement_filters(df, freq, curr_date)
 
 
@@ -1571,8 +1736,15 @@ def _get_financial_report_eastmoney(
     params = _eastmoney_financial_report_params(code, report_type)
     response = _em_get(_DATACENTER_URL, params=params, timeout=15)
     payload = response.json()
-    items = payload.get("result", {}).get("data") or []
-    if not isinstance(items, list) or not items:
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        raise DataSourceParseError("Eastmoney response missing result object")
+    items = result.get("data")
+    if items is None:
+        raise DataSourceParseError("Eastmoney response missing result.data")
+    if not isinstance(items, list):
+        raise DataSourceParseError("Eastmoney result.data is not a list")
+    if not items:
         return pd.DataFrame()
     df = _normalize_financial_statement_df(pd.DataFrame(items), report_type)
     return _apply_financial_statement_filters(df, freq, curr_date)
@@ -1602,20 +1774,17 @@ def _get_financial_report_tencent(
         timeout=15,
         source_name=f"Tencent {report_type} {code}",
     )
-    tables = pd.read_html(StringIO(response.text))
+    try:
+        tables = pd.read_html(StringIO(response.text))
+    except ValueError as exc:
+        raise DataSourceParseError(str(exc)) from exc
     if not tables:
-        raise ValueError(f"Tencent {report_type} table layout missing")
+        raise DataSourceParseError(f"Tencent {report_type} table layout missing")
     for table in tables:
         if table is None or table.empty:
             continue
         work = table.copy()
-        if isinstance(work.columns, pd.MultiIndex):
-            work.columns = [
-                " ".join(str(part).strip() for part in col if str(part).strip())
-                for col in work.columns
-            ]
-        else:
-            work.columns = [str(col).strip() for col in work.columns]
+        work.columns = _normalize_financial_columns(work.columns)
         if len(work.columns) < 2:
             continue
         if not any("报" in str(col) or _re.search(r"\d{4}-\d{2}-\d{2}", str(col)) for col in work.columns[1:]):
@@ -1624,7 +1793,7 @@ def _get_financial_report_tencent(
         filtered = _apply_financial_statement_filters(work, freq, curr_date)
         if not filtered.empty:
             return filtered
-    raise ValueError(f"Tencent {report_type} table layout unrecognized")
+    raise DataSourceParseError(f"Tencent {report_type} table layout unrecognized")
 
 
 def _get_financial_report(
@@ -1636,42 +1805,64 @@ def _get_financial_report(
         ("东方财富 datacenter", _get_financial_report_eastmoney),
         ("腾讯财经", _get_financial_report_tencent),
     ]
-    statuses: list[tuple[str, str, str | None]] = []
+    statuses: list[SourceFailure] = []
 
     for source_name, fetcher in sources:
         try:
             df = fetcher(code, report_type, freq, curr_date)
         except Exception as exc:
-            statuses.append(("unavailable", source_name, _exception_summary(exc)))
+            statuses.append(
+                SourceFailure(
+                    status="unavailable",
+                    source_name=source_name,
+                    category=_classify_source_exception(exc),
+                    detail=_exception_summary(exc),
+                )
+            )
             continue
         df = _apply_financial_statement_filters(df, freq, curr_date)
         if df is not None and not df.empty:
             return source_name, df, None
-        statuses.append(("no_data", source_name, None))
+        statuses.append(
+            SourceFailure(
+                status="no_data",
+                source_name=source_name,
+                category=FAILURE_NO_DATA,
+            )
+        )
 
-    source_names = [source_name for _, source_name, _ in statuses]
-    saw_unavailable = any(status == "unavailable" for status, _, _ in statuses)
+    source_names = [item.source_name for item in statuses]
+    saw_unavailable = any(item.status == "unavailable" for item in statuses)
     if statuses and not saw_unavailable and all(
-        status == "no_data" for status, _, _ in statuses
+        item.status == "no_data" for item in statuses
     ):
         return (
             None,
             None,
             _format_confirmed_no_data(
                 report_type,
-                f"已尝试 {'/'.join(source_names)}，接口均正常返回空结果。"
+                f"[{FAILURE_NO_DATA}] 已尝试 {'/'.join(source_names)}，接口均正常返回空结果。"
                 "这通常表示该标的当前无可用报表记录，可直接如实写入报告。",
             ),
         )
 
     last_error = next(
-        (detail for status, _, detail in reversed(statuses) if status == "unavailable"),
+        (
+            f"{item.category}: {item.detail}"
+            for item in reversed(statuses)
+            if item.status == "unavailable" and item.detail
+        ),
         None,
     )
     return (
         None,
         None,
-        _format_source_unavailable(report_type, source_names, last_error),
+        _format_source_unavailable(
+            report_type,
+            source_names,
+            last_error,
+            failures=[item for item in statuses if item.status == "unavailable"],
+        ),
     )
 
 
