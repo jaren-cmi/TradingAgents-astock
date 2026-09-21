@@ -832,6 +832,7 @@ def _normalize_profit_forecast_df(df: pd.DataFrame) -> pd.DataFrame | None:
     if not required.issubset(set(work.columns)):
         return None
 
+    work = _coalesce_duplicate_columns(work)
     work = work.loc[:, ["年度", "预测机构数", "最小值", "均值", "最大值"]].copy()
     work = work.dropna(how="all")
     if work.empty:
@@ -1416,8 +1417,9 @@ def _financial_report_date_series(df: pd.DataFrame) -> pd.Series | None:
     """Best-effort report-date extraction across vendors."""
     for col in ("报告日", "REPORT_DATE", "REPORT_DATE_DATE", "date", "Date"):
         if col in df.columns:
+            series = _coalesce_duplicate_columns(df.loc[:, df.columns == col]).iloc[:, 0]
             series = pd.to_datetime(
-                df[col].astype(str).str[:10], errors="coerce"
+                series.astype(str).str[:10], errors="coerce"
             )
             if series.notna().any():
                 return series
@@ -1553,6 +1555,24 @@ def _normalize_financial_columns(columns) -> list[str]:
     return [str(col).strip() for col in columns]
 
 
+def _coalesce_duplicate_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Collapse duplicate column labels by keeping the first non-null value per row."""
+    if df is None or df.empty or not df.columns.duplicated().any():
+        return df
+
+    coalesced = []
+    seen = set()
+    for col in df.columns:
+        if col in seen:
+            continue
+        duplicate_group = df.loc[:, df.columns == col]
+        series = duplicate_group.bfill(axis=1).iloc[:, 0]
+        series.name = col
+        coalesced.append(series)
+        seen.add(col)
+    return pd.concat(coalesced, axis=1)
+
+
 def _normalize_financial_statement_df(
     df: pd.DataFrame,
     report_type: str,
@@ -1572,6 +1592,11 @@ def _normalize_financial_statement_df(
             renamed[source_col] = canonical_col
     if renamed:
         work = work.rename(columns=renamed)
+    work = _coalesce_duplicate_columns(work)
+    if "报告日" in work.columns:
+        work["报告日"] = work["报告日"].map(
+            lambda value: _format_report_date_key(value) if pd.notna(value) else value
+        )
     return work
 
 

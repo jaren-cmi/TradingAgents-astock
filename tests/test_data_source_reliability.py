@@ -343,6 +343,16 @@ def test_eastmoney_financial_report_params_use_verified_report_names(
             {"REPORT_DATE": "2026-06-30", "NETCASH_OPERATE": 3, "NETCASH_FINANCE": 2},
             ["报告日", "经营活动产生的现金流量净额", "筹资活动产生的现金流量净额"],
         ),
+        (
+            "利润表",
+            {"报告日": "2026-06-30", "营业总收入": 8, "归属于母公司股东的净利润": 2},
+            {
+                "REPORT_DATE": "2026-06-30",
+                "TOTAL_REVENUE": 8,
+                "PARENT_NETPROFIT": 2,
+            },
+            ["报告日", "营业总收入", "归属于母公司股东的净利润"],
+        ),
     ],
 )
 def test_financial_statement_normalization_aligns_sina_and_eastmoney_fields(
@@ -410,6 +420,92 @@ def test_sina_financial_parser_extracts_real_response_samples(
 
     assert normalized["报告日"].tolist() == ["2026-06-30", "2026-03-31"]
     assert normalized.loc[0, expected_column] == expected_value
+
+
+@pytest.mark.parametrize(
+    ("report_type", "fixture_name", "expected_values"),
+    [
+        (
+            "资产负债表",
+            "eastmoney_balance_sheet_response.json",
+            {"资产总计": 1234.5, "负债合计": 456.7},
+        ),
+        (
+            "利润表",
+            "eastmoney_income_statement_response.json",
+            {"营业总收入": 321.0, "归属于母公司股东的净利润": 15.0},
+        ),
+        (
+            "现金流量表",
+            "eastmoney_cashflow_response.json",
+            {"经营活动产生的现金流量净额": 55.0, "筹资活动产生的现金流量净额": 20.0},
+        ),
+    ],
+)
+def test_eastmoney_financial_report_chain_handles_real_response_shapes(
+    monkeypatch, report_type, fixture_name, expected_values
+):
+    payload = _load_fixture(fixture_name)
+
+    class _Resp:
+        def json(self):
+            return payload
+
+    monkeypatch.setattr(a_stock, "_em_get", lambda *args, **kwargs: _Resp())
+
+    df = a_stock._get_financial_report_eastmoney(
+        "688256", report_type, "quarterly", "2026-09-20"
+    )
+
+    assert not df.empty
+    assert not df.columns.duplicated().any()
+    assert df["报告日"].tolist() == ["2026-06-30", "2026-03-31"]
+    assert df.loc[0, list(expected_values)].to_dict() == expected_values
+
+
+def test_financial_statement_normalization_coalesces_duplicate_canonical_columns():
+    df = pd.DataFrame(
+        [
+            {
+                "REPORT_DATE": "2026-06-30 00:00:00",
+                "REPORT_DATE_NAME": "2026中报",
+                "TOTAL_LIABILITIES": 456.7,
+                "TOTAL_LIAB": 456.7,
+                "TOTAL_ASSETS": 1234.5,
+            },
+            {
+                "REPORT_DATE": "2026-03-31 00:00:00",
+                "REPORT_DATE_NAME": "2026一季报",
+                "TOTAL_LIABILITIES": 400.0,
+                "TOTAL_LIAB": 400.0,
+                "TOTAL_ASSETS": 1200.0,
+            },
+        ]
+    )
+
+    normalized = a_stock._normalize_financial_statement_df(df, "资产负债表")
+    filtered = a_stock._apply_financial_statement_filters(
+        normalized, "quarterly", "2026-09-20"
+    )
+
+    assert not normalized.columns.duplicated().any()
+    assert filtered["报告日"].tolist() == ["2026-06-30", "2026-03-31"]
+    assert filtered["负债合计"].tolist() == [456.7, 400.0]
+
+
+def test_profit_forecast_normalization_coalesces_duplicate_year_columns():
+    df = pd.DataFrame(
+        [
+            ["2026E", "2026", 18, 12.3, 13.5, 14.2],
+            ["2027E", "2027", 16, 15.0, 16.2, 17.8],
+        ],
+        columns=["年度", "年份", "预测机构数", "最小值", "均值", "最大值"],
+    )
+
+    normalized = a_stock._normalize_profit_forecast_df(df)
+
+    assert normalized is not None
+    assert normalized["年度"].tolist() == ["2026", "2027"]
 
 
 def test_sina_financial_parser_sorts_by_normalized_report_date():
