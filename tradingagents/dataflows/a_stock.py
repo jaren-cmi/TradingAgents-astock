@@ -1678,7 +1678,14 @@ def _parse_sina_financial_report_payload(
     if alias:
         fallback_keys.append(alias)
     for key in fallback_keys:
-        fallback_df = _sina_statement_rows_to_df(data.get(key, []) or [])
+        value = data.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, list):
+            raise DataSourceParseError(
+                f"Sina response field {key!r} is not a list"
+            )
+        fallback_df = _sina_statement_rows_to_df(value)
         if not fallback_df.empty:
             return fallback_df
     keys = sorted(data.keys())

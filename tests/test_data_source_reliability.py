@@ -451,6 +451,20 @@ def test_sina_statement_rows_to_df_sorts_mixed_report_date_formats():
     assert df.loc[0, "资产总计"] == "1000.0"
 
 
+def test_sina_financial_parser_rejects_non_list_legacy_field_shape():
+    payload = {
+        "result": {
+            "status": {"code": 0},
+            "data": {
+                "fzb": "not-a-list",
+            },
+        }
+    }
+
+    with pytest.raises(a_stock.DataSourceParseError, match="is not a list"):
+        a_stock._parse_sina_financial_report_payload(payload, "fzb")
+
+
 def test_eastmoney_financial_report_reaches_http_request_layer(monkeypatch):
     calls = {}
 
