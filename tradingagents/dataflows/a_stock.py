@@ -1618,7 +1618,7 @@ def _sina_statement_rows_to_df(rows: list[dict]) -> pd.DataFrame:
 
 def _parse_sina_financial_report_payload(
     payload: dict,
-    report_type: str,
+    source_key: str,
 ) -> pd.DataFrame:
     """Parse the real Sina report payload shape into one row per report period."""
     result = payload.get("result")
@@ -1665,9 +1665,22 @@ def _parse_sina_financial_report_payload(
         df = pd.DataFrame(rows)
         if not df.empty:
             return df
-    fallback_df = _sina_statement_rows_to_df(data.get(report_type, []) or [])
-    if not fallback_df.empty:
-        return fallback_df
+    fallback_keys = [source_key]
+    fallback_aliases = {
+        "fzb": "资产负债表",
+        "lrb": "利润表",
+        "llb": "现金流量表",
+        "资产负债表": "fzb",
+        "利润表": "lrb",
+        "现金流量表": "llb",
+    }
+    alias = fallback_aliases.get(source_key)
+    if alias:
+        fallback_keys.append(alias)
+    for key in fallback_keys:
+        fallback_df = _sina_statement_rows_to_df(data.get(key, []) or [])
+        if not fallback_df.empty:
+            return fallback_df
     keys = sorted(data.keys())
     raise DataSourceParseError(
         f"Sina response contained no parsable statement rows; data keys={keys}"
