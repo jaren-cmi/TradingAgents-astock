@@ -1610,8 +1610,9 @@ def _sina_statement_rows_to_df(rows: list[dict]) -> pd.DataFrame:
         yoy = item.get("item_tongbi")
         if yoy not in (None, ""):
             row[f"{title}_同比"] = yoy
+    sorted_periods = sorted(grouped.keys(), key=_report_period_sort_key, reverse=True)
     return pd.DataFrame(
-        [grouped[key] for key in sorted(grouped.keys(), reverse=True)]
+        [grouped[key] for key in sorted_periods]
     )
 
 

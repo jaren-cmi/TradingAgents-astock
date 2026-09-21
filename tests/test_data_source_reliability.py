@@ -439,6 +439,18 @@ def test_sina_financial_parser_sorts_by_normalized_report_date():
     assert df.loc[0, "资产总计"] == "1000.0"
 
 
+def test_sina_statement_rows_to_df_sorts_mixed_report_date_formats():
+    df = a_stock._sina_statement_rows_to_df(
+        [
+            {"report_date": "20260331", "item_title": "资产总计", "item_value": "900.0"},
+            {"report_date": "2026/06/30", "item_title": "资产总计", "item_value": "1000.0"},
+        ]
+    )
+
+    assert df["报告日"].tolist() == ["2026-06-30", "2026-03-31"]
+    assert df.loc[0, "资产总计"] == "1000.0"
+
+
 def test_eastmoney_financial_report_reaches_http_request_layer(monkeypatch):
     calls = {}
 
